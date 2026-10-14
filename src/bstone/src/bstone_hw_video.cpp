@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 // Hardware accelerated video (HW).
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -671,6 +672,14 @@ private:
 	R3rR2Texture* r3_fade_t2d_{};
 	cgm::Mat4D r3_fade_ortho_mat_{};
 
+	// Crosshair: four outline quads (black) followed by four fill quads (white).
+	static constexpr int crosshair_quad_count = 8;
+	static constexpr int crosshair_vertex_count = 4 * crosshair_quad_count;
+	static constexpr int crosshair_index_count = 6 * crosshair_quad_count;
+	R3rBufferUPtr crosshair_ib_{};
+	R3rBufferUPtr crosshair_vb_{};
+	R3rVertexInputUPtr crosshair_vi_{};
+
 	bool fizzle_fx_is_enabled_{};
 	bool fizzle_fx_is_fading_{};
 	int fizzle_fx_color_index_{};
@@ -1058,6 +1067,12 @@ private:
 	void update_3d_fade_ib();
 	void update_3d_fade_vb();
 	void update_3d_fade_ortho();
+
+	void destroy_crosshair() noexcept;
+	void create_crosshair();
+	void update_crosshair_ib();
+	void update_crosshair_vb();
+	void render_crosshair();
 
 	void destroy_3d_fade_r2_texture() noexcept;
 	void create_r3_fade_r2_texture();
@@ -4868,6 +4883,161 @@ try {
 	}
 
 	update_vertex_buffer<FadeVertex>(r3_fade_vb_, 0, 4, vertices.data());
+
+	update_crosshair_vb();
+} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
+
+void HwVideo::destroy_crosshair() noexcept
+{
+	destroy_vertex_input(crosshair_vi_);
+	destroy_vertex_buffer(crosshair_vb_);
+	destroy_index_buffer(crosshair_ib_);
+}
+
+void HwVideo::create_crosshair()
+try {
+	crosshair_ib_ = create_index_buffer(R3rBufferUsageType::draw_static, 2, crosshair_index_count);
+	crosshair_vb_ = create_vertex_buffer<FadeVertex>(R3rBufferUsageType::draw_static, crosshair_vertex_count);
+	create_vertex_input<FadeVertex>(crosshair_ib_, crosshair_vb_, crosshair_vi_);
+} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
+
+void HwVideo::update_crosshair_ib()
+try {
+	auto indices = std::array<std::uint16_t, crosshair_index_count>{};
+
+	for (int i = 0; i < crosshair_quad_count; ++i)
+	{
+		const auto base = static_cast<std::uint16_t>(4 * i);
+		const auto offset = 6 * i;
+
+		indices[offset + 0] = base;
+		indices[offset + 1] = static_cast<std::uint16_t>(base + 1);
+		indices[offset + 2] = static_cast<std::uint16_t>(base + 2);
+		indices[offset + 3] = base;
+		indices[offset + 4] = static_cast<std::uint16_t>(base + 2);
+		indices[offset + 5] = static_cast<std::uint16_t>(base + 3);
+	}
+
+	update_index_buffer(crosshair_ib_, 0, crosshair_index_count, indices.data());
+} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
+
+void HwVideo::update_crosshair_vb()
+try {
+	if (crosshair_vb_ == nullptr)
+	{
+		return;
+	}
+
+	// Sized relative to a 1080-line screen: 2px thick, 8px arms, 4px gap, 1px outline.
+	const auto unit = static_cast<double>(vid_layout_.screen_height) / 1080.0;
+	const auto thickness = std::max(1.0, std::round(2.0 * unit));
+	const auto arm = std::max(3.0, std::round(8.0 * unit));
+	const auto gap = std::max(2.0, std::round(4.0 * unit));
+	const auto outline = std::max(1.0, std::round(1.0 * unit));
+
+	// Snap the centre so odd/even thicknesses stay pixel-aligned.
+	const auto half_t = 0.5 * thickness;
+	const auto cx = std::floor(0.5 * vid_layout_.screen_viewport_width - half_t) + half_t;
+	const auto cy = std::floor(0.5 * vid_layout_.screen_viewport_height - half_t) + half_t;
+
+	struct Rect { double x0, y0, x1, y1; };
+
+	const Rect arms[4] =
+	{
+		{cx - gap - arm, cy - half_t, cx - gap, cy + half_t}, // left
+		{cx + gap, cy - half_t, cx + gap + arm, cy + half_t}, // right
+		{cx - half_t, cy - gap - arm, cx + half_t, cy - gap}, // bottom
+		{cx - half_t, cy + gap, cx + half_t, cy + gap + arm}, // top
+	};
+
+	auto vertices = FadeVbi{};
+	vertices.resize(crosshair_vertex_count);
+
+	auto vertex_index = 0;
+
+	const auto add_quad = [&](const Rect& r)
+	{
+		const auto x0 = static_cast<float>(r.x0);
+		const auto y0 = static_cast<float>(r.y0);
+		const auto x1 = static_cast<float>(r.x1);
+		const auto y1 = static_cast<float>(r.y1);
+
+		vertices[vertex_index].xyz = VertexPosition{x0, y0, 0.0F};
+		vertices[vertex_index++].uv = VertexTextureCoordinates{0.0F, 0.0F};
+		vertices[vertex_index].xyz = VertexPosition{x1, y0, 0.0F};
+		vertices[vertex_index++].uv = VertexTextureCoordinates{1.0F, 0.0F};
+		vertices[vertex_index].xyz = VertexPosition{x1, y1, 0.0F};
+		vertices[vertex_index++].uv = VertexTextureCoordinates{1.0F, 1.0F};
+		vertices[vertex_index].xyz = VertexPosition{x0, y1, 0.0F};
+		vertices[vertex_index++].uv = VertexTextureCoordinates{0.0F, 1.0F};
+	};
+
+	for (const auto& r : arms)
+	{
+		add_quad(Rect{r.x0 - outline, r.y0 - outline, r.x1 + outline, r.y1 + outline});
+	}
+
+	for (const auto& r : arms)
+	{
+		add_quad(r);
+	}
+
+	update_vertex_buffer<FadeVertex>(crosshair_vb_, 0, crosshair_vertex_count, vertices.data());
+} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
+
+void HwVideo::render_crosshair()
+try {
+	auto& command_buffer = r3_command_buffer_;
+
+	{
+		auto& command = command_buffer->write_set_mat4_uniform();
+		command.var = model_mat_uniform_;
+		convert(cgm::Mat4D::get_identity(), command.value);
+	}
+
+	{
+		auto& command = command_buffer->write_set_mat4_uniform();
+		command.var = view_mat_uniform_;
+		convert(cgm::Mat4D::get_identity(), command.value);
+	}
+
+	{
+		auto& command = command_buffer->write_set_mat4_uniform();
+		command.var = projection_mat_uniform_;
+		convert(r3_fade_ortho_mat_, command.value);
+	}
+
+	{
+		auto& command = command_buffer->write_set_sampler();
+		command.sampler = fade_sampler_.get();
+	}
+
+	{
+		auto& command = command_buffer->write_set_vertex_input();
+		command.vertex_input = crosshair_vi_.get();
+	}
+
+	const auto draw_half = [&](R3rR2Texture* texture, int first_quad)
+	{
+		{
+			auto& command = command_buffer->write_set_texture();
+			command.r2_texture = texture;
+		}
+
+		{
+			auto& command = command_buffer->write_draw_indexed();
+			auto& param = command.draw_indexed;
+
+			param.primitive_type = R3rPrimitiveType::triangle_list;
+			param.vertex_count = 6 * (crosshair_quad_count / 2);
+			param.index_byte_depth = 2;
+			param.index_buffer_offset = 0;
+			param.index_offset = 6 * first_quad;
+		}
+	};
+
+	draw_half(r2_black_t2d_1x1_, 0);
+	draw_half(r2_white_t2d_1x1_, crosshair_quad_count / 2);
 } BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
 
 void HwVideo::update_3d_fade_ortho()
@@ -4913,6 +5083,7 @@ void HwVideo::uninitialize_3d_fade() noexcept
 	destroy_3d_fade_vb();
 	destroy_3d_fade_ib();
 	destroy_3d_fade_r2_texture();
+	destroy_crosshair();
 }
 
 void HwVideo::destroy_texture_manager() noexcept
@@ -4931,7 +5102,9 @@ try {
 	create_3d_fade_vb();
 	create_3d_fade_vi();
 	create_r3_fade_r2_texture();
+	create_crosshair();
 
+	update_crosshair_ib();
 	update_3d_fade_ib();
 	update_3d_fade_vb();
 	update_3d_fade_ortho();
@@ -6646,6 +6819,12 @@ try {
 			}
 		}
 
+		// Crosshair.
+		//
+		if (gp_show_crosshair() && playstate != ex_died && playstate != ex_victorious)
+		{
+			render_crosshair();
+		}
 
 		// 3D fade (bonus, damage, death, etc).
 		//

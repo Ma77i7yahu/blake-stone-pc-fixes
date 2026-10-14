@@ -1045,7 +1045,6 @@ source_group("bstone" FILES ${BSTONE_BSTONE_SOURCES})
 if (WIN32)
 	set(BSTONE_RESOURCES_WIN32_SOURCES
 		src/resources/win32/bstone_win32_rc.h
-		$<$<CXX_COMPILER_ID:MSVC>:src/resources/win32/bstone_win32_msvc.manifest>
 		"${PROJECT_BINARY_DIR}/src/resources/win32/bstone_win32.rc"
 	)
 

@@ -1469,6 +1469,62 @@ void DrawPlayerWeapon()
 	}
 }
 
+// Software-renderer crosshair (the hardware renderer draws its own).
+void DrawCrosshair()
+{
+	if (vid_is_hw() || !gp_show_crosshair())
+	{
+		return;
+	}
+
+	if (playstate == ex_died || playstate == ex_victorious)
+	{
+		return;
+	}
+
+	const auto unit = std::max(1, vga_height / 400);
+	const auto thickness = unit;
+	const auto arm = 4 * unit;
+	const auto gap = 2 * unit;
+
+	const auto cx = viewwidth / 2;
+	const auto cy = vga_3d_view_top_y + (viewheight / 2);
+
+	const auto fill = [](int x1, int y1, int x2, int y2, std::uint8_t color)
+	{
+		x1 = std::max(x1, 0);
+		x2 = std::min(x2, viewwidth);
+		y1 = std::max(y1, vga_3d_view_top_y);
+		y2 = std::min(y2, vga_3d_view_bottom_y);
+
+		for (int y = y1; y < y2; ++y)
+		{
+			for (int x = x1; x < x2; ++x)
+			{
+				vga_memory[vl_get_offset(0, x, y)] = color;
+			}
+		}
+	};
+
+	const int arms[4][4] =
+	{
+		{cx - gap - arm, cy, cx - gap, cy + thickness},
+		{cx + thickness + gap, cy, cx + thickness + gap + arm, cy + thickness},
+		{cx, cy - gap - arm, cx + thickness, cy - gap},
+		{cx, cy + thickness + gap, cx + thickness, cy + thickness + gap + arm},
+	};
+
+	for (const auto& a : arms)
+	{
+		fill(a[0] - unit, a[1] - unit, a[2] + unit, a[3] + unit, BLACK);
+	}
+
+	for (const auto& a : arms)
+	{
+		fill(a[0], a[1], a[2], a[3], WHITE);
+	}
+}
+
 void CalcTics()
 {
 	constexpr long long one_second_ns = 1'000'000'000;
@@ -1651,6 +1707,7 @@ void ThreeDRefresh()
 	vid_is_3d = false;
 
 	DrawPlayerWeapon(); // draw player's hands
+	DrawCrosshair();
 
 //
 // show screen and time last cycle
