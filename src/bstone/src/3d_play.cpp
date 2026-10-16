@@ -2068,6 +2068,7 @@ void PlayLoop()
 	}
 
 	smooth_motion_reset(gp_smooth_motion() && !demoplayback);
+	frame_timing_reset();
 
 	do
 	{
@@ -2088,8 +2089,10 @@ void PlayLoop()
 
 			while (!smooth_motion_is_tic_pending() && !playstate && !startgame)
 			{
+				frame_timing_begin_frame(false);
 				in_handle_events();
 				PollMousePreview();
+				frame_timing_mark_poll();
 
 				vid_is_hud = true;
 				ThreeDRefresh();
@@ -2099,7 +2102,9 @@ void PlayLoop()
 			tics = saved_tics;
 		}
 
+		frame_timing_begin_frame(true);
 		PollControls();
+		frame_timing_mark_poll();
 
 		//
 		// actor thinking
@@ -2148,6 +2153,7 @@ void PlayLoop()
 			CheckSpawnGoldstern();
 		}
 
+		frame_timing_mark_logic();
 		smooth_motion_end_logic_frame();
 
 		vid_is_hud = true;

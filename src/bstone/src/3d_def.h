@@ -3383,6 +3383,12 @@ double smooth_motion_get_preview_turn() noexcept;
 double player_get_view_x() noexcept;
 double player_get_view_y() noexcept;
 
+// Frame timing diagnostics: logs frames that miss a display refresh (dbg_frame_timing).
+void frame_timing_reset() noexcept;
+void frame_timing_begin_frame(bool is_logic_frame) noexcept;
+void frame_timing_mark_poll() noexcept;
+void frame_timing_mark_logic() noexcept;
+
 extern std::uint16_t LastMsgPri;
 extern std::int16_t MsgTicsRemain;
 
@@ -3993,6 +3999,8 @@ void gp_show_crosshair(bool is_enabled);
 
 bool gp_smooth_motion() noexcept;
 void gp_smooth_motion(bool is_enabled);
+
+bool dbg_frame_timing() noexcept;
 
 bool am_rotatable() noexcept;
 void am_rotatable(bool is_enable);

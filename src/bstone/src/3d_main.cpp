@@ -11094,6 +11094,17 @@ auto gp_smooth_motion_cvar = bstone::CVar{
 	bstone::CVarFlags::archive,
 	gp_smooth_motion_default};
 
+// dbg_frame_timing
+
+constexpr auto dbg_frame_timing_cvar_name = bstone::StringView{"dbg_frame_timing"};
+constexpr auto dbg_frame_timing_default = false;
+
+auto dbg_frame_timing_cvar = bstone::CVar{
+	bstone::CVarBoolTag{},
+	dbg_frame_timing_cvar_name,
+	bstone::CVarFlags::archive,
+	dbg_frame_timing_default};
+
 } // namespace
 
 void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
@@ -11114,6 +11125,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_ps_map_in_stats_cvar);
 	cvar_mgr.add(gp_show_crosshair_cvar);
 	cvar_mgr.add(gp_smooth_motion_cvar);
+	cvar_mgr.add(dbg_frame_timing_cvar);
 }
 
 namespace {
@@ -11293,6 +11305,11 @@ bool gp_smooth_motion() noexcept
 void gp_smooth_motion(bool is_enabled)
 {
 	gp_smooth_motion_cvar.set_bool(is_enabled);
+}
+
+bool dbg_frame_timing() noexcept
+{
+	return dbg_frame_timing_cvar.get_bool();
 }
 
 bool am_rotatable() noexcept

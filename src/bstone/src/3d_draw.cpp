@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
@@ -1671,6 +1672,44 @@ double smooth_motion_get_alpha() noexcept
 	return bstone::clamp((span - 1.0 + pending) / span, 0.0, 1.0);
 }
 
+// Frame timing diagnostics (dbg_frame_timing).
+
+using FrameTimingClock = std::chrono::steady_clock;
+
+bool frame_timing_in_frame_ = false;
+bool frame_timing_is_logic_frame_ = false;
+FrameTimingClock::time_point frame_timing_begin_{};
+FrameTimingClock::time_point frame_timing_poll_{};
+FrameTimingClock::time_point frame_timing_logic_{};
+FrameTimingClock::time_point frame_timing_draw_{};
+FrameTimingClock::time_point frame_timing_last_present_{};
+FrameTimingClock::time_point frame_timing_summary_begin_{};
+
+int frame_timing_frames_ = 0;
+int frame_timing_logic_frames_ = 0;
+int frame_timing_slow_frames_ = 0;
+int frame_timing_slow_lines_ = 0;
+double frame_timing_max_interval_ms_ = 0.0;
+double frame_timing_draw_sum_ms_ = 0.0;
+double frame_timing_present_sum_ms_ = 0.0;
+
+double frame_timing_ms(FrameTimingClock::time_point from, FrameTimingClock::time_point to) noexcept
+{
+	return std::chrono::duration<double, std::milli>(to - from).count();
+}
+
+void frame_timing_log(const std::string& message)
+{
+	bstone::globals::logger->log(bstone::LoggerMessageType::information, ("[FT] " + message).c_str());
+}
+
+std::string frame_timing_to_string(double value)
+{
+	char buffer[32];
+	std::snprintf(buffer, sizeof(buffer), "%.2f", value);
+	return buffer;
+}
+
 // False when smoothing is off or the player was moved outside of the play loop's logic.
 bool smooth_motion_is_camera_tracking() noexcept
 {
@@ -1698,6 +1737,137 @@ double player_get_view_y() noexcept
 
 	return smooth_motion_prev_y_ + ((smooth_motion_cur_y_ - smooth_motion_prev_y_) * smooth_motion_get_alpha());
 }
+
+void frame_timing_reset() noexcept
+{
+	frame_timing_in_frame_ = false;
+	frame_timing_last_present_ = FrameTimingClock::time_point{};
+	frame_timing_summary_begin_ = FrameTimingClock::now();
+	frame_timing_frames_ = 0;
+	frame_timing_logic_frames_ = 0;
+	frame_timing_slow_frames_ = 0;
+	frame_timing_max_interval_ms_ = 0.0;
+	frame_timing_draw_sum_ms_ = 0.0;
+	frame_timing_present_sum_ms_ = 0.0;
+}
+
+void frame_timing_begin_frame(bool is_logic_frame) noexcept
+{
+	if (!dbg_frame_timing())
+	{
+		return;
+	}
+
+	frame_timing_in_frame_ = true;
+	frame_timing_is_logic_frame_ = is_logic_frame;
+	frame_timing_begin_ = FrameTimingClock::now();
+	frame_timing_poll_ = frame_timing_begin_;
+	frame_timing_logic_ = frame_timing_begin_;
+	frame_timing_draw_ = frame_timing_begin_;
+}
+
+void frame_timing_mark_poll() noexcept
+{
+	if (frame_timing_in_frame_)
+	{
+		frame_timing_poll_ = FrameTimingClock::now();
+		frame_timing_logic_ = frame_timing_poll_;
+	}
+}
+
+void frame_timing_mark_logic() noexcept
+{
+	if (frame_timing_in_frame_)
+	{
+		frame_timing_logic_ = FrameTimingClock::now();
+	}
+}
+
+namespace {
+
+void frame_timing_mark_draw() noexcept
+{
+	if (frame_timing_in_frame_)
+	{
+		frame_timing_draw_ = FrameTimingClock::now();
+	}
+}
+
+// Called after the frame was presented. Logs frames that missed a display refresh.
+void frame_timing_end_frame()
+{
+	if (!frame_timing_in_frame_)
+	{
+		return;
+	}
+
+	frame_timing_in_frame_ = false;
+
+	const auto present = FrameTimingClock::now();
+	const auto has_previous = (frame_timing_last_present_ != FrameTimingClock::time_point{});
+	const auto interval_ms = has_previous ? frame_timing_ms(frame_timing_last_present_, present) : 0.0;
+	frame_timing_last_present_ = present;
+
+	const auto poll_ms = frame_timing_ms(frame_timing_begin_, frame_timing_poll_);
+	const auto logic_ms = frame_timing_ms(frame_timing_poll_, frame_timing_logic_);
+	const auto draw_ms = frame_timing_ms(frame_timing_logic_, frame_timing_draw_);
+	const auto present_ms = frame_timing_ms(frame_timing_draw_, present);
+
+	// Long gaps are pauses (menus, level loads), not slow frames.
+	if (interval_ms > 250.0)
+	{
+		return;
+	}
+
+	frame_timing_frames_ += 1;
+	frame_timing_logic_frames_ += frame_timing_is_logic_frame_ ? 1 : 0;
+	frame_timing_draw_sum_ms_ += draw_ms;
+	frame_timing_present_sum_ms_ += present_ms;
+	frame_timing_max_interval_ms_ = std::max(frame_timing_max_interval_ms_, interval_ms);
+
+	const auto refresh_rate = std::max(vid_cfg_get_refresh_rate(), 30);
+	const auto slow_threshold_ms = 1.5 * 1000.0 / refresh_rate;
+
+	if (interval_ms > slow_threshold_ms)
+	{
+		frame_timing_slow_frames_ += 1;
+
+		if (frame_timing_slow_lines_ < 2000)
+		{
+			frame_timing_slow_lines_ += 1;
+
+			frame_timing_log(
+				"slow frame " + frame_timing_to_string(interval_ms) + " ms (" +
+				(frame_timing_is_logic_frame_ ? "logic, tics " + std::to_string(tics) : std::string{"in-between"}) +
+				"): input " + frame_timing_to_string(poll_ms) +
+				", logic " + frame_timing_to_string(logic_ms) +
+				", draw " + frame_timing_to_string(draw_ms) +
+				", present " + frame_timing_to_string(present_ms));
+		}
+	}
+
+	const auto summary_ms = frame_timing_ms(frame_timing_summary_begin_, present);
+
+	if (summary_ms >= 5000.0)
+	{
+		const auto frames = std::max(frame_timing_frames_, 1);
+
+		frame_timing_log(
+			"summary " + frame_timing_to_string(summary_ms / 1000.0) + " s: " +
+			std::to_string(frame_timing_frames_) + " frames (" +
+			frame_timing_to_string(frame_timing_frames_ * 1000.0 / summary_ms) + " fps, " +
+			std::to_string(frame_timing_logic_frames_) + " logic), slow " +
+			std::to_string(frame_timing_slow_frames_) +
+			", max interval " + frame_timing_to_string(frame_timing_max_interval_ms_) +
+			" ms, avg draw " + frame_timing_to_string(frame_timing_draw_sum_ms_ / frames) +
+			" ms, avg present " + frame_timing_to_string(frame_timing_present_sum_ms_ / frames) + " ms");
+
+		frame_timing_reset();
+		frame_timing_last_present_ = present;
+	}
+}
+
+} // namespace
 
 void WallRefresh()
 {
@@ -1878,7 +2048,9 @@ void ThreeDRefresh()
 	}
 
 	// BBi
+	frame_timing_mark_draw();
 	VL_RefreshScreen();
+	frame_timing_end_frame();
 
 	frameon++;
 }
