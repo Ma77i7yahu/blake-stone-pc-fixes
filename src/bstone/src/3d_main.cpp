@@ -11142,57 +11142,6 @@ auto gp_momentum_friction_ms_cvar = bstone::CVar{
 	0,
 	2000};
 
-// gp_momentum_style (0: simple ramp, 1: Jedi Outcast / Quake 3)
-
-constexpr auto gp_momentum_style_cvar_name = bstone::StringView{"gp_momentum_style"};
-constexpr auto gp_momentum_style_default = momentum_style_jedi_outcast;
-
-auto gp_momentum_style_cvar = bstone::CVar{
-	bstone::CVarInt32Tag{},
-	gp_momentum_style_cvar_name,
-	bstone::CVarFlags::archive,
-	gp_momentum_style_default,
-	momentum_style_simple,
-	momentum_style_jedi_outcast};
-
-// gp_momentum_jo_accelerate (Jedi Outcast pm_accelerate)
-
-constexpr auto gp_momentum_jo_accelerate_cvar_name = bstone::StringView{"gp_momentum_jo_accelerate"};
-constexpr auto gp_momentum_jo_accelerate_default = 10;
-
-auto gp_momentum_jo_accelerate_cvar = bstone::CVar{
-	bstone::CVarInt32Tag{},
-	gp_momentum_jo_accelerate_cvar_name,
-	bstone::CVarFlags::archive,
-	gp_momentum_jo_accelerate_default,
-	1,
-	100};
-
-// gp_momentum_jo_friction (Jedi Outcast pm_friction)
-
-constexpr auto gp_momentum_jo_friction_cvar_name = bstone::StringView{"gp_momentum_jo_friction"};
-constexpr auto gp_momentum_jo_friction_default = 6;
-
-auto gp_momentum_jo_friction_cvar = bstone::CVar{
-	bstone::CVarInt32Tag{},
-	gp_momentum_jo_friction_cvar_name,
-	bstone::CVarFlags::archive,
-	gp_momentum_jo_friction_default,
-	0,
-	100};
-
-// gp_momentum_jo_stop_speed_pct (pm_stopspeed as a percentage of running speed; JO: 100 of 250)
-
-constexpr auto gp_momentum_jo_stop_speed_pct_cvar_name = bstone::StringView{"gp_momentum_jo_stop_speed_pct"};
-constexpr auto gp_momentum_jo_stop_speed_pct_default = 40;
-
-auto gp_momentum_jo_stop_speed_pct_cvar = bstone::CVar{
-	bstone::CVarInt32Tag{},
-	gp_momentum_jo_stop_speed_pct_cvar_name,
-	bstone::CVarFlags::archive,
-	gp_momentum_jo_stop_speed_pct_default,
-	0,
-	200};
 } // namespace
 
 void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
@@ -11217,10 +11166,6 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_momentum_cvar);
 	cvar_mgr.add(gp_momentum_accel_ms_cvar);
 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
-	cvar_mgr.add(gp_momentum_style_cvar);
-	cvar_mgr.add(gp_momentum_jo_accelerate_cvar);
-	cvar_mgr.add(gp_momentum_jo_friction_cvar);
-	cvar_mgr.add(gp_momentum_jo_stop_speed_pct_cvar);
 }
 
 namespace {
@@ -11427,30 +11372,6 @@ int gp_momentum_friction_ms() noexcept
 	return gp_momentum_friction_ms_cvar.get_int32();
 }
 
-int gp_momentum_style() noexcept
-{
-	return gp_momentum_style_cvar.get_int32();
-}
-
-void gp_momentum_style(int style)
-{
-	gp_momentum_style_cvar.set_int32(style);
-}
-
-int gp_momentum_jo_accelerate() noexcept
-{
-	return gp_momentum_jo_accelerate_cvar.get_int32();
-}
-
-int gp_momentum_jo_friction() noexcept
-{
-	return gp_momentum_jo_friction_cvar.get_int32();
-}
-
-int gp_momentum_jo_stop_speed_pct() noexcept
-{
-	return gp_momentum_jo_stop_speed_pct_cvar.get_int32();
-}
 bool am_rotatable() noexcept
 {
 	return am_rotatable_cvar.get_bool();

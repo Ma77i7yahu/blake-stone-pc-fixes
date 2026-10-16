@@ -6122,22 +6122,14 @@ void draw_switch2_description(
 
 	VWB_Bar(WindowX, WindowY - 1, WindowW, WindowH, menu_background_color);
 
-	const char* text = instr[which];
-
-	if (which == SW2_MOMENTUM)
-	{
-		text = !gp_momentum() ? "MOMENTUM: OFF" :
-			(gp_momentum_style() == momentum_style_jedi_outcast ? "MOMENTUM: JEDI OUTCAST" : "MOMENTUM: SIMPLE");
-	}
-
 	SETFONTCOLOR(TERM_SHADOW_COLOR, TERM_BACK_COLOR);
-	US_PrintCentered(text);
+	US_PrintCentered(instr[which]);
 
 	WindowX--;
 	WindowY--;
 
 	SETFONTCOLOR(INSTRUCTIONS_TEXT_COLOR, TERM_BACK_COLOR);
-	US_PrintCentered(text);
+	US_PrintCentered(instr[which]);
 }
 
 void draw_all_switch2_lights(
@@ -6305,21 +6297,7 @@ void cp_switches2(
 			break;
 
 		case SW2_MOMENTUM:
-			// Cycles off -> simple -> Jedi Outcast -> off.
-			if (!gp_momentum())
-			{
-				gp_momentum(true);
-				gp_momentum_style(momentum_style_simple);
-			}
-			else if (gp_momentum_style() == momentum_style_simple)
-			{
-				gp_momentum_style(momentum_style_jedi_outcast);
-			}
-			else
-			{
-				gp_momentum(false);
-			}
-
+			gp_momentum(!gp_momentum());
 			ShootSnd();
 			draw_switch2_menu();
 			break;
