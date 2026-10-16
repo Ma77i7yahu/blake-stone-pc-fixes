@@ -7,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 
 #include <cassert>
+#include <cmath>
 #include <cstring>
 
 #include <algorithm>
@@ -1570,9 +1571,12 @@ void WallRefresh()
 	//
 
 	viewangle = player->angle;
-	midangle = viewangle * (FINEANGLES / ANGLES);
-	viewsin = sintable[viewangle];
-	viewcos = costable[viewangle];
+
+	const auto view_angle = player_get_view_angle();
+	midangle = static_cast<int>(std::lround(view_angle * (FINEANGLES / ANGLES))) % FINEANGLES;
+	const auto view_angle_rad = bstone::math::deg_to_rad(view_angle);
+	viewsin = std::sin(view_angle_rad);
+	viewcos = std::cos(view_angle_rad);
 	viewx = player->x - (focallength * viewcos);
 	viewy = player->y + (focallength * viewsin);
 

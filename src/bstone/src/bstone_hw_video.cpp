@@ -2623,7 +2623,7 @@ try {
 
 void HwVideo::update_player_direction() noexcept
 {
-	player_angle_rad_ = math::deg_to_rad(player->angle);
+	player_angle_rad_ = math::deg_to_rad(player_get_view_angle());
 	view_direction_ = cgm::Vec2D{std::cos(player_angle_rad_), -std::sin(player_angle_rad_)};
 	bs_view_direction_ = view_direction_;
 }

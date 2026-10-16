@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 
+#include <cmath>
 #include <cstring>
 
 #include "audio.h"
@@ -540,6 +541,13 @@ void PollMouseMove()
 
 	delta_x *= move_scale;
 	delta_y *= move_scale;
+
+	// Carry the fractional part over to the next frame so small mouse movements aren't truncated away.
+	static auto delta_x_remainder = 0.0;
+	delta_x += delta_x_remainder;
+	const auto whole_delta_x = std::trunc(delta_x);
+	delta_x_remainder = delta_x - whole_delta_x;
+	delta_x = whole_delta_x;
 
 	controlx += static_cast<int>(delta_x);
 	controly += static_cast<int>(delta_y);

@@ -491,6 +491,24 @@ int clamp_angle(
 	return angle;
 }
 
+double player_get_view_angle() noexcept
+{
+	// The logical angle is whole degrees; anglefrac holds the pending remainder (in 1/ANGLESCALE degree units).
+	auto angle = player->angle - (static_cast<double>(anglefrac) / ANGLESCALE);
+
+	while (angle >= ANGLES)
+	{
+		angle -= ANGLES;
+	}
+
+	while (angle < 0.0)
+	{
+		angle += ANGLES;
+	}
+
+	return angle;
+}
+
 /*
 =======================
 =

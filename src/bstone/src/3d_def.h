@@ -3367,6 +3367,9 @@ extern char LocationText[MAX_LOCATION_DESC_LEN];
 //
 extern int anglefrac;
 
+// Player's view angle in degrees [0, ANGLES) including the sub-degree turn remainder.
+double player_get_view_angle() noexcept;
+
 extern std::uint16_t LastMsgPri;
 extern std::int16_t MsgTicsRemain;
 
