@@ -4007,6 +4007,14 @@ void gp_momentum(bool is_enabled);
 int gp_momentum_accel_ms() noexcept;
 int gp_momentum_friction_ms() noexcept;
 
+constexpr auto momentum_style_simple = 0;
+constexpr auto momentum_style_jedi_outcast = 1;
+int gp_momentum_style() noexcept;
+void gp_momentum_style(int style);
+int gp_momentum_jo_accelerate() noexcept;
+int gp_momentum_jo_friction() noexcept;
+int gp_momentum_jo_stop_speed_pct() noexcept;
+
 // Clears the player's momentum (level start).
 void momentum_reset() noexcept;
 

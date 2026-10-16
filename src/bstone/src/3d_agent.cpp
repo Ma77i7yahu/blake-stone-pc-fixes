@@ -576,33 +576,79 @@ void momentum_end()
 	const auto wish_y = momentum_wish_y_ / tic_count;
 	const auto has_wish = (wish_x != 0.0 || wish_y != 0.0);
 
-	// Rates are relative to full running speed, so the times are 0 -> full run and full run -> 0.
 	constexpr auto run_speed = 70 * MOVESCALE;
-	const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
-	const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
+	constexpr auto tic_seconds = 1.0 / TickBase;
 
 	auto move_x = 0.0;
 	auto move_y = 0.0;
 
-	for (auto i = 0; i < tic_count; ++i)
+	if (gp_momentum_style() == momentum_style_jedi_outcast)
 	{
-		const auto delta_x = wish_x - momentum_velocity_x_;
-		const auto delta_y = wish_y - momentum_velocity_y_;
-		const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
+		// Quake 3 / Jedi Outcast ground movement (PM_Friction + PM_Accelerate) run once per tic.
+		// Speeds are relative to running speed: JO runs at 250 units/s with a stop speed of 100.
+		const auto accelerate = static_cast<double>(gp_momentum_jo_accelerate());
+		const auto friction = static_cast<double>(gp_momentum_jo_friction());
+		const auto stop_speed = run_speed * (gp_momentum_jo_stop_speed_pct() / 100.0);
+		const auto wish_speed = std::sqrt((wish_x * wish_x) + (wish_y * wish_y));
 
-		if (delta <= max_step)
+		for (auto i = 0; i < tic_count; ++i)
 		{
-			momentum_velocity_x_ = wish_x;
-			momentum_velocity_y_ = wish_y;
-		}
-		else
-		{
-			momentum_velocity_x_ += delta_x * (max_step / delta);
-			momentum_velocity_y_ += delta_y * (max_step / delta);
-		}
+			const auto speed = std::sqrt(
+				(momentum_velocity_x_ * momentum_velocity_x_) + (momentum_velocity_y_ * momentum_velocity_y_));
 
-		move_x += momentum_velocity_x_;
-		move_y += momentum_velocity_y_;
+			if (speed > 0.0)
+			{
+				const auto control = std::max(speed, stop_speed);
+				const auto new_speed = std::max(speed - (control * friction * tic_seconds), 0.0);
+				momentum_velocity_x_ *= new_speed / speed;
+				momentum_velocity_y_ *= new_speed / speed;
+			}
+
+			if (has_wish)
+			{
+				const auto dir_x = wish_x / wish_speed;
+				const auto dir_y = wish_y / wish_speed;
+				const auto current_speed = (momentum_velocity_x_ * dir_x) + (momentum_velocity_y_ * dir_y);
+				const auto add_speed = wish_speed - current_speed;
+
+				if (add_speed > 0.0)
+				{
+					const auto accel_speed = std::min(accelerate * tic_seconds * wish_speed, add_speed);
+					momentum_velocity_x_ += accel_speed * dir_x;
+					momentum_velocity_y_ += accel_speed * dir_y;
+				}
+			}
+
+			move_x += momentum_velocity_x_;
+			move_y += momentum_velocity_y_;
+		}
+	}
+	else
+	{
+		// Simple: straight-line ramp. Times are 0 -> full run and full run -> 0.
+		const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
+		const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
+
+		for (auto i = 0; i < tic_count; ++i)
+		{
+			const auto delta_x = wish_x - momentum_velocity_x_;
+			const auto delta_y = wish_y - momentum_velocity_y_;
+			const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
+
+			if (delta <= max_step)
+			{
+				momentum_velocity_x_ = wish_x;
+				momentum_velocity_y_ = wish_y;
+			}
+			else
+			{
+				momentum_velocity_x_ += delta_x * (max_step / delta);
+				momentum_velocity_y_ += delta_y * (max_step / delta);
+			}
+
+			move_x += momentum_velocity_x_;
+			move_y += momentum_velocity_y_;
+		}
 	}
 
 	auto speed = std::sqrt((move_x * move_x) + (move_y * move_y));
