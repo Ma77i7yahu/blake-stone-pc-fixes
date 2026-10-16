@@ -508,6 +508,36 @@ void PollKeyboardMove()
 	}
 }
 
+namespace {
+
+// Fractional mouse turn carried over to the next frame so small movements aren't truncated away.
+double mouse_delta_x_remainder = 0.0;
+
+// Mouse turn in controlx units, including the carried-over fraction.
+double get_mouse_turn(int mousexmove) noexcept
+{
+	const auto move_scale = 1.0 + (in_get_mouse_sensitivity() / 6.0);
+
+	return (mousexmove * move_scale) + mouse_delta_x_remainder;
+}
+
+} // namespace
+
+// Shows the mouse turn accumulated since the last game tic without consuming it.
+void PollMousePreview()
+{
+	if (!in_is_mouse_enabled())
+	{
+		return;
+	}
+
+	int mousexmove;
+	int mouseymove;
+	in_get_mouse_deltas(mousexmove, mouseymove);
+
+	smooth_motion_set_preview_turn(std::trunc(get_mouse_turn(mousexmove)));
+}
+
 void PollMouseMove()
 {
 	int mousexmove;
@@ -525,7 +555,7 @@ void PollMouseMove()
 
 	const auto move_scale = 1.0 + (in_get_mouse_sensitivity() / 6.0);
 
-	auto delta_x = static_cast<double>(mousexmove);
+	auto delta_x = get_mouse_turn(mousexmove);
 	auto delta_y = static_cast<double>(mouseymove);
 
 	if (is_running)
@@ -539,14 +569,10 @@ void PollMouseMove()
 
 	delta_y = 0.0;
 
-	delta_x *= move_scale;
 	delta_y *= move_scale;
 
-	// Carry the fractional part over to the next frame so small mouse movements aren't truncated away.
-	static auto delta_x_remainder = 0.0;
-	delta_x += delta_x_remainder;
 	const auto whole_delta_x = std::trunc(delta_x);
-	delta_x_remainder = delta_x - whole_delta_x;
+	mouse_delta_x_remainder = delta_x - whole_delta_x;
 	delta_x = whole_delta_x;
 
 	controlx += static_cast<int>(delta_x);
@@ -612,7 +638,15 @@ void PollControls()
 	//
 	// get timing info for last frame
 	//
-	CalcTics();
+	if (smooth_motion_is_active())
+	{
+		// PlayLoop already waited for a whole tic while drawing in-between frames.
+		CalcTicsNoSleep();
+	}
+	else
+	{
+		CalcTics();
+	}
 
 	// BBi
 	in_handle_events();
@@ -2033,8 +2067,38 @@ void PlayLoop()
 		IN_StartAck();
 	}
 
+	smooth_motion_reset(gp_smooth_motion() && !demoplayback);
+
 	do
 	{
+		// Pick up the menu switch without restarting the level.
+		const auto is_smooth_motion = gp_smooth_motion() && !demoplayback;
+
+		if (is_smooth_motion != smooth_motion_is_active())
+		{
+			smooth_motion_reset(is_smooth_motion);
+		}
+
+		if (smooth_motion_is_active())
+		{
+			// Draw frames at the display rate until the next game tic is due.
+			// Game logic doesn't run here, so nothing should count down.
+			const auto saved_tics = tics;
+			tics = 0;
+
+			while (!smooth_motion_is_tic_pending() && !playstate && !startgame)
+			{
+				in_handle_events();
+				PollMousePreview();
+
+				vid_is_hud = true;
+				ThreeDRefresh();
+				vid_is_hud = false;
+			}
+
+			tics = saved_tics;
+		}
+
 		PollControls();
 
 		//
@@ -2083,6 +2147,8 @@ void PlayLoop()
 		{
 			CheckSpawnGoldstern();
 		}
+
+		smooth_motion_end_logic_frame();
 
 		vid_is_hud = true;
 		UpdatePaletteShifts();
@@ -2136,6 +2202,8 @@ void PlayLoop()
 
 
 	} while (!playstate && !startgame);
+
+	smooth_motion_reset(false);
 
 	if (playstate != ex_died)
 	{

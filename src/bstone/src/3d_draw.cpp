@@ -1526,21 +1526,37 @@ void DrawCrosshair()
 	}
 }
 
-void CalcTics()
+namespace {
+
+constexpr long long calc_tics_one_second_ns = 1'000'000'000;
+using CalcTicsClock = std::chrono::steady_clock;
+long long calc_tics_period_counter = 0;
+CalcTicsClock::time_point calc_tics_last_time_point{};
+
+// Smooth motion state (see smooth_motion_reset).
+bool smooth_motion_active_ = false;
+double smooth_motion_prev_x_ = 0.0;
+double smooth_motion_prev_y_ = 0.0;
+double smooth_motion_cur_x_ = 0.0;
+double smooth_motion_cur_y_ = 0.0;
+int smooth_motion_span_ = 1;
+double smooth_motion_preview_turn_ = 0.0;
+
+void calc_tics_impl(bool is_sleep)
 {
-	constexpr long long one_second_ns = 1'000'000'000;
-	using Clock = std::chrono::steady_clock;
-	using TimePoint = Clock::time_point;
-	static long long period_counter = 0;
-	static TimePoint last_time_point{};
-	const TimePoint time_point = Clock::now();
-	const long long diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(time_point - last_time_point).count();
-	last_time_point = time_point;
-	period_counter += diff_ns * TickBase;
-	const long long elapsed_periods = period_counter / one_second_ns;
-	period_counter %= one_second_ns;
-	const std::chrono::nanoseconds delay{(one_second_ns - period_counter) / TickBase};
-	std::this_thread::sleep_for(delay);
+	const auto time_point = CalcTicsClock::now();
+	const long long diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(time_point - calc_tics_last_time_point).count();
+	calc_tics_last_time_point = time_point;
+	calc_tics_period_counter += diff_ns * TickBase;
+	const long long elapsed_periods = calc_tics_period_counter / calc_tics_one_second_ns;
+	calc_tics_period_counter %= calc_tics_one_second_ns;
+
+	if (is_sleep)
+	{
+		const std::chrono::nanoseconds delay{(calc_tics_one_second_ns - calc_tics_period_counter) / TickBase};
+		std::this_thread::sleep_for(delay);
+	}
+
 	constexpr long long min_tics = 1;
 	constexpr long long max_tics = UINT16_MAX;
 	tics = static_cast<std::uint16_t>(bstone::clamp(elapsed_periods, min_tics, max_tics));
@@ -1564,6 +1580,125 @@ void CalcTics()
 	}
 }
 
+// Game tics elapsed since the last CalcTics call (fractional).
+double calc_tics_get_pending() noexcept
+{
+	const auto diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+		CalcTicsClock::now() - calc_tics_last_time_point).count();
+
+	return static_cast<double>(calc_tics_period_counter + (diff_ns * TickBase)) / calc_tics_one_second_ns;
+}
+
+} // namespace
+
+void CalcTics()
+{
+	calc_tics_impl(true);
+}
+
+void CalcTicsNoSleep()
+{
+	calc_tics_impl(false);
+}
+
+void smooth_motion_reset(bool is_active) noexcept
+{
+	smooth_motion_active_ = is_active;
+	calc_tics_period_counter = 0;
+	calc_tics_last_time_point = CalcTicsClock::now();
+	smooth_motion_prev_x_ = player->x;
+	smooth_motion_prev_y_ = player->y;
+	smooth_motion_cur_x_ = player->x;
+	smooth_motion_cur_y_ = player->y;
+	smooth_motion_span_ = 1;
+	smooth_motion_preview_turn_ = 0.0;
+}
+
+bool smooth_motion_is_active() noexcept
+{
+	return smooth_motion_active_;
+}
+
+bool smooth_motion_is_tic_pending() noexcept
+{
+	return calc_tics_get_pending() >= 1.0;
+}
+
+void smooth_motion_end_logic_frame() noexcept
+{
+	smooth_motion_prev_x_ = smooth_motion_cur_x_;
+	smooth_motion_prev_y_ = smooth_motion_cur_y_;
+	smooth_motion_cur_x_ = player->x;
+	smooth_motion_cur_y_ = player->y;
+	smooth_motion_span_ = std::max(static_cast<int>(tics), 1);
+	smooth_motion_preview_turn_ = 0.0;
+
+	// Don't slide across teleports, elevators and level changes.
+	const auto dx = smooth_motion_cur_x_ - smooth_motion_prev_x_;
+	const auto dy = smooth_motion_cur_y_ - smooth_motion_prev_y_;
+
+	if ((dx * dx) + (dy * dy) > 1.0)
+	{
+		smooth_motion_prev_x_ = smooth_motion_cur_x_;
+		smooth_motion_prev_y_ = smooth_motion_cur_y_;
+	}
+}
+
+void smooth_motion_set_preview_turn(double control_x) noexcept
+{
+	smooth_motion_preview_turn_ = control_x;
+}
+
+double smooth_motion_get_preview_turn() noexcept
+{
+	return smooth_motion_active_ ? smooth_motion_preview_turn_ : 0.0;
+}
+
+namespace {
+
+// Interpolation factor between the previous and the current logic frame.
+// The camera is drawn one tic behind the game so it always has two states to blend.
+double smooth_motion_get_alpha() noexcept
+{
+	if (!smooth_motion_active_)
+	{
+		return 1.0;
+	}
+
+	const auto pending = bstone::clamp(calc_tics_get_pending(), 0.0, 1.0);
+	const auto span = static_cast<double>(smooth_motion_span_);
+
+	return bstone::clamp((span - 1.0 + pending) / span, 0.0, 1.0);
+}
+
+// False when smoothing is off or the player was moved outside of the play loop's logic.
+bool smooth_motion_is_camera_tracking() noexcept
+{
+	return smooth_motion_active_ && player->x == smooth_motion_cur_x_ && player->y == smooth_motion_cur_y_;
+}
+
+} // namespace
+
+double player_get_view_x() noexcept
+{
+	if (!smooth_motion_is_camera_tracking())
+	{
+		return player->x;
+	}
+
+	return smooth_motion_prev_x_ + ((smooth_motion_cur_x_ - smooth_motion_prev_x_) * smooth_motion_get_alpha());
+}
+
+double player_get_view_y() noexcept
+{
+	if (!smooth_motion_is_camera_tracking())
+	{
+		return player->y;
+	}
+
+	return smooth_motion_prev_y_ + ((smooth_motion_cur_y_ - smooth_motion_prev_y_) * smooth_motion_get_alpha());
+}
+
 void WallRefresh()
 {
 	//
@@ -1577,14 +1712,16 @@ void WallRefresh()
 	const auto view_angle_rad = bstone::math::deg_to_rad(view_angle);
 	viewsin = std::sin(view_angle_rad);
 	viewcos = std::cos(view_angle_rad);
-	viewx = player->x - (focallength * viewcos);
-	viewy = player->y + (focallength * viewsin);
+	const auto player_view_x = player_get_view_x();
+	const auto player_view_y = player_get_view_y();
+	viewx = player_view_x - (focallength * viewcos);
+	viewy = player_view_y + (focallength * viewsin);
 
 	focaltx = static_cast<int>(viewx);
 	focalty = static_cast<int>(viewy);
 
-	viewtx = static_cast<int>(player->x);
-	viewty = static_cast<int>(player->y);
+	viewtx = static_cast<int>(player_view_x);
+	viewty = static_cast<int>(player_view_y);
 
 	xpartialdown = get_fractional(viewx);
 	xpartialup = 1.0 - xpartialdown;

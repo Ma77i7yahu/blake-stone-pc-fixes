@@ -3370,6 +3370,19 @@ extern int anglefrac;
 // Player's view angle in degrees [0, ANGLES) including the sub-degree turn remainder.
 double player_get_view_angle() noexcept;
 
+// Smooth motion: frames are drawn at the display rate and the camera position is
+// interpolated between game tics. Game logic still runs on whole tics.
+void CalcTicsNoSleep();
+void smooth_motion_reset(bool is_active) noexcept;
+bool smooth_motion_is_active() noexcept;
+bool smooth_motion_is_tic_pending() noexcept;
+void smooth_motion_end_logic_frame() noexcept;
+// Mouse turn (in controlx units) not yet applied by game logic; drawn in frames between tics.
+void smooth_motion_set_preview_turn(double control_x) noexcept;
+double smooth_motion_get_preview_turn() noexcept;
+double player_get_view_x() noexcept;
+double player_get_view_y() noexcept;
+
 extern std::uint16_t LastMsgPri;
 extern std::int16_t MsgTicsRemain;
 
@@ -3977,6 +3990,9 @@ void gp_ps_map_in_stats(bool is_enabled);
 
 bool gp_show_crosshair() noexcept;
 void gp_show_crosshair(bool is_enabled);
+
+bool gp_smooth_motion() noexcept;
+void gp_smooth_motion(bool is_enabled);
 
 bool am_rotatable() noexcept;
 void am_rotatable(bool is_enable);

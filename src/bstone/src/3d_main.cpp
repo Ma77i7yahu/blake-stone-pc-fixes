@@ -11083,6 +11083,17 @@ auto gp_show_crosshair_cvar = bstone::CVar{
 	bstone::CVarFlags::archive,
 	gp_show_crosshair_default};
 
+// gp_smooth_motion
+
+constexpr auto gp_smooth_motion_cvar_name = bstone::StringView{"gp_smooth_motion"};
+constexpr auto gp_smooth_motion_default = true;
+
+auto gp_smooth_motion_cvar = bstone::CVar{
+	bstone::CVarBoolTag{},
+	gp_smooth_motion_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_smooth_motion_default};
+
 } // namespace
 
 void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
@@ -11102,6 +11113,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_vanilla_fizzle_fx_cvar);
 	cvar_mgr.add(gp_ps_map_in_stats_cvar);
 	cvar_mgr.add(gp_show_crosshair_cvar);
+	cvar_mgr.add(gp_smooth_motion_cvar);
 }
 
 namespace {
@@ -11272,6 +11284,15 @@ bool gp_show_crosshair() noexcept
 void gp_show_crosshair(bool is_enabled)
 {
 	gp_show_crosshair_cvar.set_bool(is_enabled);
+}
+bool gp_smooth_motion() noexcept
+{
+	return gp_smooth_motion_cvar.get_bool();
+}
+
+void gp_smooth_motion(bool is_enabled)
+{
+	gp_smooth_motion_cvar.set_bool(is_enabled);
 }
 
 bool am_rotatable() noexcept

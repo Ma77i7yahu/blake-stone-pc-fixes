@@ -2630,8 +2630,8 @@ void HwVideo::update_player_direction() noexcept
 
 void HwVideo::update_player_position() noexcept
 {
-	player_position_[0] = player->x;
-	player_position_[1] = player->y;
+	player_position_[0] = player_get_view_x();
+	player_position_[1] = player_get_view_y();
 }
 
 void HwVideo::update_player_view_position() noexcept
