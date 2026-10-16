@@ -415,6 +415,10 @@ void Thrust(
 	std::int16_t angle,
 	double speed);
 
+void ThrustVector(
+	double xmove,
+	double ymove);
+
 bool TryMove(
 	objtype* ob);
 
@@ -509,6 +513,141 @@ double player_get_view_angle() noexcept
 	return angle;
 }
 
+// Momentum: the player speeds up and slows down over a short time instead of instantly.
+// Velocity is in tiles per tic. Off during demos so recorded input plays back the same.
+
+extern bool demorecord;
+extern bool demoplayback;
+
+namespace {
+
+bool momentum_is_collecting_ = false;
+double momentum_wish_x_ = 0.0;
+double momentum_wish_y_ = 0.0;
+double momentum_velocity_x_ = 0.0;
+double momentum_velocity_y_ = 0.0;
+
+bool momentum_is_enabled() noexcept
+{
+	return gp_momentum() && !demorecord && !demoplayback;
+}
+
+// Movement requested by ControlMovement; collected while momentum is on.
+void player_thrust(
+	std::int16_t angle,
+	double speed)
+{
+	if (!momentum_is_collecting_)
+	{
+		Thrust(angle, speed);
+		return;
+	}
+
+	momentum_wish_x_ += speed * costable[angle];
+	momentum_wish_y_ -= speed * sintable[angle];
+}
+
+void momentum_begin() noexcept
+{
+	momentum_is_collecting_ = momentum_is_enabled();
+	momentum_wish_x_ = 0.0;
+	momentum_wish_y_ = 0.0;
+
+	if (!momentum_is_collecting_)
+	{
+		momentum_velocity_x_ = 0.0;
+		momentum_velocity_y_ = 0.0;
+	}
+}
+
+void momentum_end()
+{
+	if (!momentum_is_collecting_)
+	{
+		return;
+	}
+
+	momentum_is_collecting_ = false;
+
+	const auto tic_count = std::max(static_cast<int>(tics), 1);
+
+	// Requested speed per tic (the requested movement already scales with tics).
+	const auto wish_x = momentum_wish_x_ / tic_count;
+	const auto wish_y = momentum_wish_y_ / tic_count;
+	const auto has_wish = (wish_x != 0.0 || wish_y != 0.0);
+
+	// Rates are relative to full running speed, so the times are 0 -> full run and full run -> 0.
+	constexpr auto run_speed = 70 * MOVESCALE;
+	const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
+	const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
+
+	auto move_x = 0.0;
+	auto move_y = 0.0;
+
+	for (auto i = 0; i < tic_count; ++i)
+	{
+		const auto delta_x = wish_x - momentum_velocity_x_;
+		const auto delta_y = wish_y - momentum_velocity_y_;
+		const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
+
+		if (delta <= max_step)
+		{
+			momentum_velocity_x_ = wish_x;
+			momentum_velocity_y_ = wish_y;
+		}
+		else
+		{
+			momentum_velocity_x_ += delta_x * (max_step / delta);
+			momentum_velocity_y_ += delta_y * (max_step / delta);
+		}
+
+		move_x += momentum_velocity_x_;
+		move_y += momentum_velocity_y_;
+	}
+
+	auto speed = std::sqrt((move_x * move_x) + (move_y * move_y));
+
+	if (speed == 0.0)
+	{
+		return;
+	}
+
+	thrustspeed += speed;
+
+	constexpr auto max_speed = 2.0 * MINDIST;
+
+	if (speed > max_speed)
+	{
+		move_x *= max_speed / speed;
+		move_y *= max_speed / speed;
+	}
+
+	const auto old_x = player->x;
+	const auto old_y = player->y;
+
+	ThrustVector(move_x, move_y);
+
+	// Don't keep pushing into a wall we were stopped by.
+	if (move_x != 0.0 && player->x == old_x)
+	{
+		momentum_velocity_x_ = 0.0;
+	}
+
+	if (move_y != 0.0 && player->y == old_y)
+	{
+		momentum_velocity_y_ = 0.0;
+	}
+}
+
+} // namespace
+
+void momentum_reset() noexcept
+{
+	momentum_is_collecting_ = false;
+	momentum_velocity_x_ = 0.0;
+	momentum_velocity_y_ = 0.0;
+}
+
 /*
 =======================
 =
@@ -538,6 +677,7 @@ void ControlMovement(
 	;
 
 	thrustspeed = 0.0;
+	momentum_begin();
 
 	//
 	// side to side move
@@ -570,7 +710,7 @@ void ControlMovement(
 		const auto sign = (strafe_value > 0 ? 1 : -1);
 		const auto angle = clamp_angle(ob->angle + (sign * (ANGLES / 4)));
 
-		Thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE);
+		player_thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE);
 	}
 #endif
 
@@ -636,7 +776,7 @@ void ControlMovement(
 		const auto angle = clamp_angle(ob->angle + angle_delta);
 		const auto value = std::abs(y);
 
-		Thrust(static_cast<std::int16_t>(angle), value);
+		player_thrust(static_cast<std::int16_t>(angle), value);
 	}
 	else
 	{
@@ -645,19 +785,21 @@ void ControlMovement(
 		//
 		if (controly < 0)
 		{
-			Thrust(ob->angle, -controly * MOVESCALE); // move forwards
+			player_thrust(ob->angle, -controly * MOVESCALE); // move forwards
 		}
 		else if (controly > 0)
 		{
 			const auto angle = clamp_angle(ob->angle + ANGLES / 2);
 
-			Thrust(static_cast<std::int16_t>(angle), controly * BACKMOVESCALE); // move backwards
+			player_thrust(static_cast<std::int16_t>(angle), controly * BACKMOVESCALE); // move backwards
 		}
 		else if (bounceOk != 0)
 		{
 			bounceOk -= 1;
 		}
 	}
+
+	momentum_end();
 
 	if (controly != 0)
 	{
@@ -2844,15 +2986,6 @@ void Thrust(
 {
 	constexpr auto max_speed = 2.0 * MINDIST;
 
-	extern TravelTable travel_table_;
-
-	std::uint16_t offset;
-	std::uint16_t* map[2]{};
-	std::int16_t dx;
-	std::int16_t dy;
-	std::int16_t dangle;
-	bool ignore_map1;
-
 	thrustspeed += speed;
 
 	//
@@ -2865,6 +2998,23 @@ void Thrust(
 
 	const auto xmove = speed * costable[angle];
 	const auto ymove = -speed * sintable[angle];
+
+	ThrustVector(xmove, ymove);
+}
+
+// Moves the player by a vector (already bounded) and handles the tile it lands on.
+void ThrustVector(
+	double xmove,
+	double ymove)
+{
+	extern TravelTable travel_table_;
+
+	std::uint16_t offset;
+	std::uint16_t* map[2]{};
+	std::int16_t dx;
+	std::int16_t dy;
+	std::int16_t dangle;
+	bool ignore_map1;
 
 	ClipMove(player, xmove, ymove);
 

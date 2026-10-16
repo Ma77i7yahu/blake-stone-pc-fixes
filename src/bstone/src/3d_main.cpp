@@ -11105,6 +11105,43 @@ auto dbg_frame_timing_cvar = bstone::CVar{
 	bstone::CVarFlags::archive,
 	dbg_frame_timing_default};
 
+// gp_momentum
+
+constexpr auto gp_momentum_cvar_name = bstone::StringView{"gp_momentum"};
+constexpr auto gp_momentum_default = true;
+
+auto gp_momentum_cvar = bstone::CVar{
+	bstone::CVarBoolTag{},
+	gp_momentum_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_momentum_default};
+
+// gp_momentum_accel_ms (time from standing to full run speed)
+
+constexpr auto gp_momentum_accel_ms_cvar_name = bstone::StringView{"gp_momentum_accel_ms"};
+constexpr auto gp_momentum_accel_ms_default = 120;
+
+auto gp_momentum_accel_ms_cvar = bstone::CVar{
+	bstone::CVarInt32Tag{},
+	gp_momentum_accel_ms_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_momentum_accel_ms_default,
+	0,
+	2000};
+
+// gp_momentum_friction_ms (time from full run speed to standing)
+
+constexpr auto gp_momentum_friction_ms_cvar_name = bstone::StringView{"gp_momentum_friction_ms"};
+constexpr auto gp_momentum_friction_ms_default = 150;
+
+auto gp_momentum_friction_ms_cvar = bstone::CVar{
+	bstone::CVarInt32Tag{},
+	gp_momentum_friction_ms_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_momentum_friction_ms_default,
+	0,
+	2000};
+
 } // namespace
 
 void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
@@ -11126,6 +11163,9 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_show_crosshair_cvar);
 	cvar_mgr.add(gp_smooth_motion_cvar);
 	cvar_mgr.add(dbg_frame_timing_cvar);
+	cvar_mgr.add(gp_momentum_cvar);
+	cvar_mgr.add(gp_momentum_accel_ms_cvar);
+	cvar_mgr.add(gp_momentum_friction_ms_cvar);
 }
 
 namespace {
@@ -11310,6 +11350,26 @@ void gp_smooth_motion(bool is_enabled)
 bool dbg_frame_timing() noexcept
 {
 	return dbg_frame_timing_cvar.get_bool();
+}
+
+bool gp_momentum() noexcept
+{
+	return gp_momentum_cvar.get_bool();
+}
+
+void gp_momentum(bool is_enabled)
+{
+	gp_momentum_cvar.set_bool(is_enabled);
+}
+
+int gp_momentum_accel_ms() noexcept
+{
+	return gp_momentum_accel_ms_cvar.get_int32();
+}
+
+int gp_momentum_friction_ms() noexcept
+{
+	return gp_momentum_friction_ms_cvar.get_int32();
 }
 
 bool am_rotatable() noexcept

@@ -4002,6 +4002,14 @@ void gp_smooth_motion(bool is_enabled);
 
 bool dbg_frame_timing() noexcept;
 
+bool gp_momentum() noexcept;
+void gp_momentum(bool is_enabled);
+int gp_momentum_accel_ms() noexcept;
+int gp_momentum_friction_ms() noexcept;
+
+// Clears the player's momentum (level start).
+void momentum_reset() noexcept;
+
 bool am_rotatable() noexcept;
 void am_rotatable(bool is_enable);
 

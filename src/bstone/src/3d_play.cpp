@@ -2069,6 +2069,7 @@ void PlayLoop()
 
 	smooth_motion_reset(gp_smooth_motion() && !demoplayback);
 	frame_timing_reset();
+	momentum_reset();
 
 	do
 	{
