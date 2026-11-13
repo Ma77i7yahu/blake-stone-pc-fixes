@@ -621,10 +621,21 @@ void duke_step(
 	const auto stop_speed = run_speed * (2048.0 / 2571008.0);
 	const auto has_wish = (duke_wish_x_ != 0.0 || duke_wish_y_ != 0.0);
 
+	const auto is_instant = !gp_duke_slide();
+
 	for (auto i = 0; i < tic_count; ++i)
 	{
-		momentum_velocity_x_ = (momentum_velocity_x_ + (duke_wish_x_ * thrust)) * friction;
-		momentum_velocity_y_ = (momentum_velocity_y_ + (duke_wish_y_ * thrust)) * friction;
+		if (is_instant)
+		{
+			// No acceleration or slide: straight to Duke's top speed, stop dead on release.
+			momentum_velocity_x_ = duke_wish_x_ * run_speed;
+			momentum_velocity_y_ = duke_wish_y_ * run_speed;
+		}
+		else
+		{
+			momentum_velocity_x_ = (momentum_velocity_x_ + (duke_wish_x_ * thrust)) * friction;
+			momentum_velocity_y_ = (momentum_velocity_y_ + (duke_wish_y_ * thrust)) * friction;
+		}
 
 		if (!has_wish && std::abs(momentum_velocity_x_) < stop_speed && std::abs(momentum_velocity_y_) < stop_speed)
 		{

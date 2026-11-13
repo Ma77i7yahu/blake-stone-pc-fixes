@@ -4016,6 +4016,7 @@ int gp_momentum_style() noexcept;
 void gp_momentum_style(int style);
 int gp_duke_speed_pct() noexcept;
 int gp_duke_strafe_pct() noexcept;
+bool gp_duke_slide() noexcept;
 
 // Clears the player's momentum (level start).
 void momentum_reset() noexcept;

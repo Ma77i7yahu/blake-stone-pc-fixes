@@ -11177,6 +11177,17 @@ constexpr auto gp_duke_speed_pct_cvar_name = bstone::StringView{"gp_duke_speed_p
 // gp_duke_strafe_pct (Duke style sideways top speed, same scale)
 
 constexpr auto gp_duke_strafe_pct_cvar_name = bstone::StringView{"gp_duke_strafe_pct"};
+
+// gp_duke_slide (Duke style acceleration/stopping slide; off = instant start and stop)
+
+constexpr auto gp_duke_slide_cvar_name = bstone::StringView{"gp_duke_slide"};
+constexpr auto gp_duke_slide_default = false;
+
+auto gp_duke_slide_cvar = bstone::CVar{
+	bstone::CVarBoolTag{},
+	gp_duke_slide_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_duke_slide_default};
 constexpr auto gp_duke_strafe_pct_default = 100;
 
 auto gp_duke_strafe_pct_cvar = bstone::CVar{
@@ -11234,6 +11245,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_momentum_style_cvar);
 	cvar_mgr.add(gp_duke_speed_pct_cvar);
 	cvar_mgr.add(gp_duke_strafe_pct_cvar);
+	cvar_mgr.add(gp_duke_slide_cvar);
 }
 
 namespace {
@@ -11473,6 +11485,11 @@ int gp_duke_speed_pct() noexcept
 int gp_duke_strafe_pct() noexcept
 {
 	return gp_duke_strafe_pct_cvar.get_int32();
+}
+
+bool gp_duke_slide() noexcept
+{
+	return gp_duke_slide_cvar.get_bool();
 }
 
 bool am_rotatable() noexcept
