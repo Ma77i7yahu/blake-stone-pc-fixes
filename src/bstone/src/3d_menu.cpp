@@ -6125,14 +6125,22 @@ void draw_switch2_description(
 
 	VWB_Bar(WindowX, WindowY - 1, WindowW, WindowH, menu_background_color);
 
+	const char* text = instr[which];
+
+	if (which == SW2_MOMENTUM)
+	{
+		text = !gp_momentum() ? "MOMENTUM: OFF" :
+			(gp_momentum_style() == momentum_style_duke ? "MOMENTUM: DUKE NUKEM 3D" : "MOMENTUM: SIMPLE");
+	}
+
 	SETFONTCOLOR(TERM_SHADOW_COLOR, TERM_BACK_COLOR);
-	US_PrintCentered(instr[which]);
+	US_PrintCentered(text);
 
 	WindowX--;
 	WindowY--;
 
 	SETFONTCOLOR(INSTRUCTIONS_TEXT_COLOR, TERM_BACK_COLOR);
-	US_PrintCentered(instr[which]);
+	US_PrintCentered(text);
 }
 
 void draw_all_switch2_lights(
@@ -6310,7 +6318,20 @@ void cp_switches2(
 			break;
 
 		case SW2_MOMENTUM:
-			gp_momentum(!gp_momentum());
+			// Cycles off -> simple -> Duke Nukem 3D -> off.
+			if (!gp_momentum())
+			{
+				gp_momentum(true);
+				gp_momentum_style(momentum_style_simple);
+			}
+			else if (gp_momentum_style() == momentum_style_simple)
+			{
+				gp_momentum_style(momentum_style_duke);
+			}
+			else
+			{
+				gp_momentum(false);
+			}
 			ShootSnd();
 			draw_switch2_menu();
 			break;

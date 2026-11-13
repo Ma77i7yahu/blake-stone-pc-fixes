@@ -4010,6 +4010,12 @@ bool gp_slow_strafe() noexcept;
 void gp_slow_strafe(bool is_enabled);
 int gp_strafe_speed_pct() noexcept;
 
+constexpr auto momentum_style_simple = 0;
+constexpr auto momentum_style_duke = 1;
+int gp_momentum_style() noexcept;
+void gp_momentum_style(int style);
+int gp_duke_speed_pct() noexcept;
+
 // Clears the player's momentum (level start).
 void momentum_reset() noexcept;
 

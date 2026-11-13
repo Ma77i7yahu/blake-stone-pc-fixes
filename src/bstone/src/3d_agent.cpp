@@ -571,6 +571,71 @@ void momentum_begin() noexcept
 	}
 }
 
+// Duke Nukem 3D movement (player.c getinput/processinput), converted to Blake Stone units.
+//
+// Duke, per 30 Hz game tic: vel += input * accel; vel *= dukefriction (0xCC00 / 65536 = 0.797);
+// vel is zeroed once tiny. Forward and sideways input are clamped separately (MAXVEL 90, MAXSVEL 90,
+// running = 80), so strafing runs at full speed and diagonals are ~1.41x faster.
+// Steady running speed = 4708 build units/s. Scale: 1 tile = 1024 build units (Duke's typical
+// ceiling height vs Blake's tile-high walls; both eyes sit at about half the room height),
+// so Duke running = 4.6 tiles/s, walking 2.3 tiles/s.
+double duke_wish_x_ = 0.0;
+double duke_wish_y_ = 0.0;
+
+constexpr auto duke_friction_30hz = 52224.0 / 65536.0;
+constexpr auto duke_run_tiles_per_second = 4708.0 / 1024.0;
+constexpr auto duke_max_input = 90.0 / 80.0;
+
+// Forward/strafe input in units of full running input (1 = running, 0.5 = walking).
+void duke_set_wish(
+	const objtype* ob,
+	double forward,
+	double right) noexcept
+{
+	forward = std::max(-duke_max_input, std::min(forward, duke_max_input));
+	right = std::max(-duke_max_input, std::min(right, duke_max_input));
+
+	const auto c = costable[ob->angle];
+	const auto s = sintable[ob->angle];
+
+	// Forward = (cos, -sin), right = (sin, cos) in Blake Stone's map axes.
+	duke_wish_x_ = (forward * c) + (right * s);
+	duke_wish_y_ = (-forward * s) + (right * c);
+}
+
+void duke_step(
+	int tic_count,
+	double& move_x,
+	double& move_y) noexcept
+{
+	// Same response at 70 Hz: friction^(30/70) per tic, thrust chosen for the same top speed.
+	static const auto friction = std::pow(duke_friction_30hz, 30.0 / TickBase);
+	const auto run_speed = (duke_run_tiles_per_second / TickBase) * (gp_duke_speed_pct() / 100.0);
+	const auto thrust = run_speed * (1.0 - friction) / friction;
+
+	// Duke zeroes velocity below 2048 of ~2.57M (running) per axis.
+	const auto stop_speed = run_speed * (2048.0 / 2571008.0);
+	const auto has_wish = (duke_wish_x_ != 0.0 || duke_wish_y_ != 0.0);
+
+	for (auto i = 0; i < tic_count; ++i)
+	{
+		momentum_velocity_x_ = (momentum_velocity_x_ + (duke_wish_x_ * thrust)) * friction;
+		momentum_velocity_y_ = (momentum_velocity_y_ + (duke_wish_y_ * thrust)) * friction;
+
+		if (!has_wish && std::abs(momentum_velocity_x_) < stop_speed && std::abs(momentum_velocity_y_) < stop_speed)
+		{
+			momentum_velocity_x_ = 0.0;
+			momentum_velocity_y_ = 0.0;
+		}
+
+		move_x += momentum_velocity_x_;
+		move_y += momentum_velocity_y_;
+	}
+
+	duke_wish_x_ = 0.0;
+	duke_wish_y_ = 0.0;
+}
+
 void momentum_end()
 {
 	if (!momentum_is_collecting_)
@@ -595,6 +660,11 @@ void momentum_end()
 	auto move_x = 0.0;
 	auto move_y = 0.0;
 
+	if (gp_momentum_style() == momentum_style_duke)
+	{
+		duke_step(tic_count, move_x, move_y);
+	}
+	else
 	for (auto i = 0; i < tic_count; ++i)
 	{
 		const auto delta_x = wish_x - momentum_velocity_x_;
@@ -808,6 +878,18 @@ void ControlMovement(
 		{
 			bounceOk -= 1;
 		}
+	}
+
+	if (momentum_is_collecting_ && gp_momentum_style() == momentum_style_duke)
+	{
+		// Duke ignores the per-direction speeds above: forward, back and strafe all use the full input.
+		const auto full_input = static_cast<double>(std::max(static_cast<int>(tics), 1) * 70); // RUNMOVE
+		const auto is_strafing = is_original_strafe || is_modern_strafe;
+
+		duke_set_wish(
+			ob,
+			-controly / full_input,
+			is_strafing ? strafe_value / full_input : 0.0); // +strafe_value = right
 	}
 
 	momentum_end();
