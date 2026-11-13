@@ -592,11 +592,60 @@ void momentum_end()
 	const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
 	const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
 
+	// Slow strafe: forward/back and sideways ramp separately, sideways with its own times
+	// measured against the (slower) strafe speed.
+	const auto is_split_ramp = gp_slow_strafe() && !demorecord && !demoplayback;
+
+	const auto ramp_step = [](double speed, int ms)
+	{
+		return (ms > 0) ? speed / (ms * TickBase / 1000.0) : 1.0e9;
+	};
+
+	const auto approach = [](double value, double target, double step)
+	{
+		const auto delta = target - value;
+
+		if (std::abs(delta) <= step)
+		{
+			return target;
+		}
+
+		return value + (delta > 0.0 ? step : -step);
+	};
+
+	const auto theta = bstone::math::deg_to_rad(player->angle);
+	const auto forward_x = std::cos(theta);
+	const auto forward_y = -std::sin(theta);
+	const auto side_x = -forward_y;
+	const auto side_y = forward_x;
+
 	auto move_x = 0.0;
 	auto move_y = 0.0;
 
 	for (auto i = 0; i < tic_count; ++i)
 	{
+		if (is_split_ramp)
+		{
+			const auto wish_f = (wish_x * forward_x) + (wish_y * forward_y);
+			const auto wish_s = (wish_x * side_x) + (wish_y * side_y);
+			auto vel_f = (momentum_velocity_x_ * forward_x) + (momentum_velocity_y_ * forward_y);
+			auto vel_s = (momentum_velocity_x_ * side_x) + (momentum_velocity_y_ * side_y);
+
+			const auto f_ms = (wish_f != 0.0) ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
+			const auto s_ms = (wish_s != 0.0) ? gp_strafe_accel_ms() : gp_strafe_friction_ms();
+			const auto strafe_speed = run_speed * strafe_speed_scale();
+
+			vel_f = approach(vel_f, wish_f, ramp_step(run_speed, f_ms));
+			vel_s = approach(vel_s, wish_s, ramp_step(strafe_speed, s_ms));
+
+			momentum_velocity_x_ = (vel_f * forward_x) + (vel_s * side_x);
+			momentum_velocity_y_ = (vel_f * forward_y) + (vel_s * side_y);
+
+			move_x += momentum_velocity_x_;
+			move_y += momentum_velocity_y_;
+			continue;
+		}
+
 		const auto delta_x = wish_x - momentum_velocity_x_;
 		const auto delta_y = wish_y - momentum_velocity_y_;
 		const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
