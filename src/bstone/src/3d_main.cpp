@@ -11142,6 +11142,30 @@ auto gp_momentum_friction_ms_cvar = bstone::CVar{
 	0,
 	2000};
 
+// gp_slow_strafe (sideways movement uses gp_strafe_speed_pct of normal speed)
+
+constexpr auto gp_slow_strafe_cvar_name = bstone::StringView{"gp_slow_strafe"};
+constexpr auto gp_slow_strafe_default = true;
+
+auto gp_slow_strafe_cvar = bstone::CVar{
+	bstone::CVarBoolTag{},
+	gp_slow_strafe_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_slow_strafe_default};
+
+// gp_strafe_speed_pct (sideways speed in percent of normal speed)
+
+constexpr auto gp_strafe_speed_pct_cvar_name = bstone::StringView{"gp_strafe_speed_pct"};
+constexpr auto gp_strafe_speed_pct_default = 50;
+
+auto gp_strafe_speed_pct_cvar = bstone::CVar{
+	bstone::CVarInt32Tag{},
+	gp_strafe_speed_pct_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_strafe_speed_pct_default,
+	10,
+	100};
+
 } // namespace
 
 void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
@@ -11166,6 +11190,8 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_momentum_cvar);
 	cvar_mgr.add(gp_momentum_accel_ms_cvar);
 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
+	cvar_mgr.add(gp_slow_strafe_cvar);
+	cvar_mgr.add(gp_strafe_speed_pct_cvar);
 }
 
 namespace {
@@ -11370,6 +11396,21 @@ int gp_momentum_accel_ms() noexcept
 int gp_momentum_friction_ms() noexcept
 {
 	return gp_momentum_friction_ms_cvar.get_int32();
+}
+
+bool gp_slow_strafe() noexcept
+{
+	return gp_slow_strafe_cvar.get_bool();
+}
+
+void gp_slow_strafe(bool is_enabled)
+{
+	gp_slow_strafe_cvar.set_bool(is_enabled);
+}
+
+int gp_strafe_speed_pct() noexcept
+{
+	return gp_strafe_speed_pct_cvar.get_int32();
 }
 
 bool am_rotatable() noexcept

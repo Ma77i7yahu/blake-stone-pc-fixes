@@ -4006,6 +4006,9 @@ bool gp_momentum() noexcept;
 void gp_momentum(bool is_enabled);
 int gp_momentum_accel_ms() noexcept;
 int gp_momentum_friction_ms() noexcept;
+bool gp_slow_strafe() noexcept;
+void gp_slow_strafe(bool is_enabled);
+int gp_strafe_speed_pct() noexcept;
 
 // Clears the player's momentum (level start).
 void momentum_reset() noexcept;

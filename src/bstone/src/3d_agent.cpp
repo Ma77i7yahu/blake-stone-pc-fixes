@@ -527,6 +527,17 @@ double momentum_wish_y_ = 0.0;
 double momentum_velocity_x_ = 0.0;
 double momentum_velocity_y_ = 0.0;
 
+// Sideways speed multiplier (gp_slow_strafe / gp_strafe_speed_pct); full speed in demos.
+double strafe_speed_scale() noexcept
+{
+	if (!gp_slow_strafe() || demorecord || demoplayback)
+	{
+		return 1.0;
+	}
+
+	return gp_strafe_speed_pct() / 100.0;
+}
+
 bool momentum_is_enabled() noexcept
 {
 	return gp_momentum() && !demorecord && !demoplayback;
@@ -710,7 +721,7 @@ void ControlMovement(
 		const auto sign = (strafe_value > 0 ? 1 : -1);
 		const auto angle = clamp_angle(ob->angle + (sign * (ANGLES / 4)));
 
-		player_thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE);
+		player_thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE * strafe_speed_scale());
 	}
 #endif
 
@@ -769,7 +780,7 @@ void ControlMovement(
 
 	if (is_modern_strafe && controly != 0)
 	{
-		const auto x = -strafe_value * MOVESCALE;
+		const auto x = -strafe_value * MOVESCALE * strafe_speed_scale();
 		const auto y = -controly * (controly < 0 ? MOVESCALE : BACKMOVESCALE);
 
 		const auto angle_delta = 90 - static_cast<int>(bstone::math::rad_to_deg(std::atan2(y, x)));

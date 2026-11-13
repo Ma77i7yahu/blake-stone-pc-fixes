@@ -122,6 +122,7 @@ enum sw2_labels
 	SW2_SHOW_CROSSHAIR,
 	SW2_SMOOTH_MOTION,
 	SW2_MOMENTUM,
+	SW2_SLOW_STRAFE,
 }; // sw2_labels
 
 enum MenuVideoLables
@@ -423,7 +424,7 @@ CP_iteminfo SwitchItems = {MENU_X, 0, 0, 0, 0, 9, {87, -1, 132, 7, 1}};
 CP_iteminfo video_items = {MENU_X, MENU_Y + 30, 5, 0, 0, 9, {77, -1, 154, 7, 1}};
 CP_iteminfo video_mode_items = {MENU_X - 31, MENU_Y + 10, 8, 0, 0, 9, {67, -1, 184, 7, 1}};
 CP_iteminfo texturing_items = {MENU_X, MENU_Y + 10, 7, 0, 0, 9, {77, -1, 154, 7, 1}};
-CP_iteminfo switches2_items = {MENU_X, MENU_Y + 21, 8, 0, 0, 9, {87, -1, 132, 7, 1}};
+CP_iteminfo switches2_items = {MENU_X, MENU_Y + 3, 9, 0, 0, 9, {87, -1, 132, 7, 1}};
 // BBi
 
 
@@ -501,6 +502,7 @@ CP_itemtype switch2_menu[] =
 	{AT_ENABLED, "SHOW CROSSHAIR", 0},
 	{AT_ENABLED, "SMOOTH MOTION", 0},
 	{AT_ENABLED, "MOMENTUM", 0},
+	{AT_ENABLED, "SLOW STRAFE", 0},
 };
 
 CP_itemtype NewEmenu[] = {
@@ -6109,6 +6111,7 @@ void draw_switch2_description(
 		"TOGGLES AIMING CROSSHAIR",
 		"TOGGLES DRAWING BETWEEN GAME TICS",
 		"TOGGLES MOVEMENT ACCELERATION",
+		"TOGGLES SLOWER SIDEWAYS MOVEMENT",
 	};
 
 	const auto& assets_info = get_assets_info();
@@ -6213,6 +6216,13 @@ void draw_all_switch2_lights(
 					shape += 1;
 				}
 				break;
+
+			case SW2_SLOW_STRAFE:
+				if (gp_slow_strafe())
+				{
+					shape += 1;
+				}
+				break;
 			}
 
 			VWB_DrawPic(switches2_items.x - 16, switches2_items.y + (i * switches2_items.y_spacing) - 1, shape);
@@ -6241,6 +6251,9 @@ void draw_switch2_menu()
 void cp_switches2(
 	std::int16_t)
 {
+	// Nine items: start higher on Planet Strike, whose description line sits higher.
+	switches2_items.y = MENU_Y + (get_assets_info().is_ps() ? -6 : 3);
+
 	CA_CacheScreen(BACKGROUND_SCREENPIC);
 	draw_switch2_menu();
 	MenuFadeIn();
@@ -6298,6 +6311,12 @@ void cp_switches2(
 
 		case SW2_MOMENTUM:
 			gp_momentum(!gp_momentum());
+			ShootSnd();
+			draw_switch2_menu();
+			break;
+
+		case SW2_SLOW_STRAFE:
+			gp_slow_strafe(!gp_slow_strafe());
 			ShootSnd();
 			draw_switch2_menu();
 			break;
