@@ -11170,10 +11170,23 @@ auto gp_momentum_style_cvar = bstone::CVar{
 	momentum_style_simple,
 	momentum_style_duke};
 
-// gp_duke_speed_pct (Duke style top speed in percent of Duke's speed scaled to Blake Stone)
+// gp_duke_speed_pct (Duke style forward/back top speed in percent of Duke's speed scaled to Blake Stone)
 
 constexpr auto gp_duke_speed_pct_cvar_name = bstone::StringView{"gp_duke_speed_pct"};
-constexpr auto gp_duke_speed_pct_default = 100;
+
+// gp_duke_strafe_pct (Duke style sideways top speed, same scale)
+
+constexpr auto gp_duke_strafe_pct_cvar_name = bstone::StringView{"gp_duke_strafe_pct"};
+constexpr auto gp_duke_strafe_pct_default = 100;
+
+auto gp_duke_strafe_pct_cvar = bstone::CVar{
+	bstone::CVarInt32Tag{},
+	gp_duke_strafe_pct_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_duke_strafe_pct_default,
+	25,
+	400};
+constexpr auto gp_duke_speed_pct_default = 200;
 
 auto gp_duke_speed_pct_cvar = bstone::CVar{
 	bstone::CVarInt32Tag{},
@@ -11220,6 +11233,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_strafe_speed_pct_cvar);
 	cvar_mgr.add(gp_momentum_style_cvar);
 	cvar_mgr.add(gp_duke_speed_pct_cvar);
+	cvar_mgr.add(gp_duke_strafe_pct_cvar);
 }
 
 namespace {
@@ -11454,6 +11468,11 @@ void gp_momentum_style(int style)
 int gp_duke_speed_pct() noexcept
 {
 	return gp_duke_speed_pct_cvar.get_int32();
+}
+
+int gp_duke_strafe_pct() noexcept
+{
+	return gp_duke_strafe_pct_cvar.get_int32();
 }
 
 bool am_rotatable() noexcept

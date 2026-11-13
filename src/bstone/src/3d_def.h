@@ -4015,6 +4015,7 @@ constexpr auto momentum_style_duke = 1;
 int gp_momentum_style() noexcept;
 void gp_momentum_style(int style);
 int gp_duke_speed_pct() noexcept;
+int gp_duke_strafe_pct() noexcept;
 
 // Clears the player's momentum (level start).
 void momentum_reset() noexcept;

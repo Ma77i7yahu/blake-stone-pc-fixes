@@ -595,6 +595,10 @@ void duke_set_wish(
 	forward = std::max(-duke_max_input, std::min(forward, duke_max_input));
 	right = std::max(-duke_max_input, std::min(right, duke_max_input));
 
+	// Separate forward/back and sideways top speeds (Duke itself uses the same for both).
+	forward *= gp_duke_speed_pct() / 100.0;
+	right *= gp_duke_strafe_pct() / 100.0;
+
 	const auto c = costable[ob->angle];
 	const auto s = sintable[ob->angle];
 
@@ -610,7 +614,7 @@ void duke_step(
 {
 	// Same response at 70 Hz: friction^(30/70) per tic, thrust chosen for the same top speed.
 	static const auto friction = std::pow(duke_friction_30hz, 30.0 / TickBase);
-	const auto run_speed = (duke_run_tiles_per_second / TickBase) * (gp_duke_speed_pct() / 100.0);
+	const auto run_speed = duke_run_tiles_per_second / TickBase;
 	const auto thrust = run_speed * (1.0 - friction) / friction;
 
 	// Duke zeroes velocity below 2048 of ~2.57M (running) per axis.
