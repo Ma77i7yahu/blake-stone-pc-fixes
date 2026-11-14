@@ -1,0 +1,1899 @@
+diff --git a/src/bstone/CMakeLists.txt b/src/bstone/CMakeLists.txt
+index 93ed7c94..614d8678 100644
+--- a/src/bstone/CMakeLists.txt
++++ b/src/bstone/CMakeLists.txt
+@@ -1045,7 +1045,6 @@ source_group("bstone" FILES ${BSTONE_BSTONE_SOURCES})
+ if (WIN32)
+ 	set(BSTONE_RESOURCES_WIN32_SOURCES
+ 		src/resources/win32/bstone_win32_rc.h
+-		$<$<CXX_COMPILER_ID:MSVC>:src/resources/win32/bstone_win32_msvc.manifest>
+ 		"${PROJECT_BINARY_DIR}/src/resources/win32/bstone_win32.rc"
+ 	)
+ 
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 6434c2ff..922bd41b 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -415,6 +415,10 @@ void Thrust(
+ 	std::int16_t angle,
+ 	double speed);
+ 
++void ThrustVector(
++	double xmove,
++	double ymove);
++
+ bool TryMove(
+ 	objtype* ob);
+ 
+@@ -491,6 +495,255 @@ int clamp_angle(
+ 	return angle;
+ }
+ 
++double player_get_view_angle() noexcept
++{
++	// The logical angle is whole degrees; anglefrac holds the pending remainder (in 1/ANGLESCALE degree units).
++	auto angle = player->angle - ((anglefrac + smooth_motion_get_preview_turn()) / ANGLESCALE);
++
++	while (angle >= ANGLES)
++	{
++		angle -= ANGLES;
++	}
++
++	while (angle < 0.0)
++	{
++		angle += ANGLES;
++	}
++
++	return angle;
++}
++
++// Momentum: the player speeds up and slows down over a short time instead of instantly.
++// Velocity is in tiles per tic. Off during demos so recorded input plays back the same.
++
++extern bool demorecord;
++extern bool demoplayback;
++
++namespace {
++
++bool momentum_is_collecting_ = false;
++double momentum_wish_x_ = 0.0;
++double momentum_wish_y_ = 0.0;
++double momentum_velocity_x_ = 0.0;
++double momentum_velocity_y_ = 0.0;
++
++// Sideways speed multiplier (gp_slow_strafe / gp_strafe_speed_pct); full speed in demos.
++double strafe_speed_scale() noexcept
++{
++	if (!gp_slow_strafe() || demorecord || demoplayback)
++	{
++		return 1.0;
++	}
++
++	return gp_strafe_speed_pct() / 100.0;
++}
++
++bool momentum_is_enabled() noexcept
++{
++	return gp_momentum() && !demorecord && !demoplayback;
++}
++
++// Movement requested by ControlMovement; collected while momentum is on.
++void player_thrust(
++	std::int16_t angle,
++	double speed)
++{
++	if (!momentum_is_collecting_)
++	{
++		Thrust(angle, speed);
++		return;
++	}
++
++	momentum_wish_x_ += speed * costable[angle];
++	momentum_wish_y_ -= speed * sintable[angle];
++}
++
++void momentum_begin() noexcept
++{
++	momentum_is_collecting_ = momentum_is_enabled();
++	momentum_wish_x_ = 0.0;
++	momentum_wish_y_ = 0.0;
++
++	if (!momentum_is_collecting_)
++	{
++		momentum_velocity_x_ = 0.0;
++		momentum_velocity_y_ = 0.0;
++	}
++}
++
++// Duke Nukem 3D movement (player.c getinput/processinput), converted to Blake Stone units.
++//
++// Duke, per 30 Hz game tic: vel += input * accel; vel *= dukefriction (0xCC00 / 65536 = 0.797);
++// vel is zeroed once tiny. Forward and sideways input are clamped separately (MAXVEL 90, MAXSVEL 90,
++// running = 80), so strafing runs at full speed and diagonals are ~1.41x faster.
++// Steady running speed = 4708 build units/s. Scale: 1 tile = 1024 build units (Duke's typical
++// ceiling height vs Blake's tile-high walls; both eyes sit at about half the room height),
++// so Duke running = 4.6 tiles/s, walking 2.3 tiles/s.
++double duke_wish_x_ = 0.0;
++double duke_wish_y_ = 0.0;
++
++constexpr auto duke_friction_30hz = 52224.0 / 65536.0;
++constexpr auto duke_run_tiles_per_second = 4708.0 / 1024.0;
++constexpr auto duke_max_input = 90.0 / 80.0;
++
++// Forward/strafe input in units of full running input (1 = running, 0.5 = walking).
++void duke_set_wish(
++	const objtype* ob,
++	double forward,
++	double right) noexcept
++{
++	forward = std::max(-duke_max_input, std::min(forward, duke_max_input));
++	right = std::max(-duke_max_input, std::min(right, duke_max_input));
++
++	// Separate forward/back and sideways top speeds (Duke itself uses the same for both).
++	forward *= gp_duke_speed_pct() / 100.0;
++	right *= gp_duke_strafe_pct() / 100.0;
++
++	const auto c = costable[ob->angle];
++	const auto s = sintable[ob->angle];
++
++	// Forward = (cos, -sin), right = (sin, cos) in Blake Stone's map axes.
++	duke_wish_x_ = (forward * c) + (right * s);
++	duke_wish_y_ = (-forward * s) + (right * c);
++}
++
++void duke_step(
++	int tic_count,
++	double& move_x,
++	double& move_y) noexcept
++{
++	// Same response at 70 Hz: friction^(30/70) per tic, thrust chosen for the same top speed.
++	static const auto friction = std::pow(duke_friction_30hz, 30.0 / TickBase);
++	const auto run_speed = duke_run_tiles_per_second / TickBase;
++	const auto thrust = run_speed * (1.0 - friction) / friction;
++
++	// Duke zeroes velocity below 2048 of ~2.57M (running) per axis.
++	const auto stop_speed = run_speed * (2048.0 / 2571008.0);
++	const auto has_wish = (duke_wish_x_ != 0.0 || duke_wish_y_ != 0.0);
++
++	const auto is_instant = !gp_duke_slide();
++
++	for (auto i = 0; i < tic_count; ++i)
++	{
++		if (is_instant)
++		{
++			// No acceleration or slide: straight to Duke's top speed, stop dead on release.
++			momentum_velocity_x_ = duke_wish_x_ * run_speed;
++			momentum_velocity_y_ = duke_wish_y_ * run_speed;
++		}
++		else
++		{
++			momentum_velocity_x_ = (momentum_velocity_x_ + (duke_wish_x_ * thrust)) * friction;
++			momentum_velocity_y_ = (momentum_velocity_y_ + (duke_wish_y_ * thrust)) * friction;
++		}
++
++		if (!has_wish && std::abs(momentum_velocity_x_) < stop_speed && std::abs(momentum_velocity_y_) < stop_speed)
++		{
++			momentum_velocity_x_ = 0.0;
++			momentum_velocity_y_ = 0.0;
++		}
++
++		move_x += momentum_velocity_x_;
++		move_y += momentum_velocity_y_;
++	}
++
++	duke_wish_x_ = 0.0;
++	duke_wish_y_ = 0.0;
++}
++
++void momentum_end()
++{
++	if (!momentum_is_collecting_)
++	{
++		return;
++	}
++
++	momentum_is_collecting_ = false;
++
++	const auto tic_count = std::max(static_cast<int>(tics), 1);
++
++	// Requested speed per tic (the requested movement already scales with tics).
++	const auto wish_x = momentum_wish_x_ / tic_count;
++	const auto wish_y = momentum_wish_y_ / tic_count;
++	const auto has_wish = (wish_x != 0.0 || wish_y != 0.0);
++
++	// Rates are relative to full running speed, so the times are 0 -> full run and full run -> 0.
++	constexpr auto run_speed = 70 * MOVESCALE;
++	const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
++	const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
++
++	auto move_x = 0.0;
++	auto move_y = 0.0;
++
++	if (gp_momentum_style() == momentum_style_duke)
++	{
++		duke_step(tic_count, move_x, move_y);
++	}
++	else
++	for (auto i = 0; i < tic_count; ++i)
++	{
++		const auto delta_x = wish_x - momentum_velocity_x_;
++		const auto delta_y = wish_y - momentum_velocity_y_;
++		const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
++
++		if (delta <= max_step)
++		{
++			momentum_velocity_x_ = wish_x;
++			momentum_velocity_y_ = wish_y;
++		}
++		else
++		{
++			momentum_velocity_x_ += delta_x * (max_step / delta);
++			momentum_velocity_y_ += delta_y * (max_step / delta);
++		}
++
++		move_x += momentum_velocity_x_;
++		move_y += momentum_velocity_y_;
++	}
++
++	auto speed = std::sqrt((move_x * move_x) + (move_y * move_y));
++
++	if (speed == 0.0)
++	{
++		return;
++	}
++
++	thrustspeed += speed;
++
++	constexpr auto max_speed = 2.0 * MINDIST;
++
++	if (speed > max_speed)
++	{
++		move_x *= max_speed / speed;
++		move_y *= max_speed / speed;
++	}
++
++	const auto old_x = player->x;
++	const auto old_y = player->y;
++
++	ThrustVector(move_x, move_y);
++
++	// Don't keep pushing into a wall we were stopped by.
++	if (move_x != 0.0 && player->x == old_x)
++	{
++		momentum_velocity_x_ = 0.0;
++	}
++
++	if (move_y != 0.0 && player->y == old_y)
++	{
++		momentum_velocity_y_ = 0.0;
++	}
++}
++
++} // namespace
++
++void momentum_reset() noexcept
++{
++	momentum_is_collecting_ = false;
++	momentum_velocity_x_ = 0.0;
++	momentum_velocity_y_ = 0.0;
++}
++
+ /*
+ =======================
+ =
+@@ -520,6 +773,7 @@ void ControlMovement(
+ 	;
+ 
+ 	thrustspeed = 0.0;
++	momentum_begin();
+ 
+ 	//
+ 	// side to side move
+@@ -552,7 +806,7 @@ void ControlMovement(
+ 		const auto sign = (strafe_value > 0 ? 1 : -1);
+ 		const auto angle = clamp_angle(ob->angle + (sign * (ANGLES / 4)));
+ 
+-		Thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE);
++		player_thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE * strafe_speed_scale());
+ 	}
+ #endif
+ 
+@@ -611,14 +865,14 @@ void ControlMovement(
+ 
+ 	if (is_modern_strafe && controly != 0)
+ 	{
+-		const auto x = -strafe_value * MOVESCALE;
++		const auto x = -strafe_value * MOVESCALE * strafe_speed_scale();
+ 		const auto y = -controly * (controly < 0 ? MOVESCALE : BACKMOVESCALE);
+ 
+ 		const auto angle_delta = 90 - static_cast<int>(bstone::math::rad_to_deg(std::atan2(y, x)));
+ 		const auto angle = clamp_angle(ob->angle + angle_delta);
+ 		const auto value = std::abs(y);
+ 
+-		Thrust(static_cast<std::int16_t>(angle), value);
++		player_thrust(static_cast<std::int16_t>(angle), value);
+ 	}
+ 	else
+ 	{
+@@ -627,13 +881,13 @@ void ControlMovement(
+ 		//
+ 		if (controly < 0)
+ 		{
+-			Thrust(ob->angle, -controly * MOVESCALE); // move forwards
++			player_thrust(ob->angle, -controly * MOVESCALE); // move forwards
+ 		}
+ 		else if (controly > 0)
+ 		{
+ 			const auto angle = clamp_angle(ob->angle + ANGLES / 2);
+ 
+-			Thrust(static_cast<std::int16_t>(angle), controly * BACKMOVESCALE); // move backwards
++			player_thrust(static_cast<std::int16_t>(angle), controly * BACKMOVESCALE); // move backwards
+ 		}
+ 		else if (bounceOk != 0)
+ 		{
+@@ -641,6 +895,20 @@ void ControlMovement(
+ 		}
+ 	}
+ 
++	if (momentum_is_collecting_ && gp_momentum_style() == momentum_style_duke)
++	{
++		// Duke ignores the per-direction speeds above: forward, back and strafe all use the full input.
++		const auto full_input = static_cast<double>(std::max(static_cast<int>(tics), 1) * 70); // RUNMOVE
++		const auto is_strafing = is_original_strafe || is_modern_strafe;
++
++		duke_set_wish(
++			ob,
++			-controly / full_input,
++			is_strafing ? strafe_value / full_input : 0.0); // +strafe_value = right
++	}
++
++	momentum_end();
++
+ 	if (controly != 0)
+ 	{
+ 		bounceOk = 8;
+@@ -2826,15 +3094,6 @@ void Thrust(
+ {
+ 	constexpr auto max_speed = 2.0 * MINDIST;
+ 
+-	extern TravelTable travel_table_;
+-
+-	std::uint16_t offset;
+-	std::uint16_t* map[2]{};
+-	std::int16_t dx;
+-	std::int16_t dy;
+-	std::int16_t dangle;
+-	bool ignore_map1;
+-
+ 	thrustspeed += speed;
+ 
+ 	//
+@@ -2848,6 +3107,23 @@ void Thrust(
+ 	const auto xmove = speed * costable[angle];
+ 	const auto ymove = -speed * sintable[angle];
+ 
++	ThrustVector(xmove, ymove);
++}
++
++// Moves the player by a vector (already bounded) and handles the tile it lands on.
++void ThrustVector(
++	double xmove,
++	double ymove)
++{
++	extern TravelTable travel_table_;
++
++	std::uint16_t offset;
++	std::uint16_t* map[2]{};
++	std::int16_t dx;
++	std::int16_t dy;
++	std::int16_t dangle;
++	bool ignore_map1;
++
+ 	ClipMove(player, xmove, ymove);
+ 
+ 	player_oldtilex = player->tilex;
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index a757c3be..afab92ed 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -3367,6 +3367,28 @@ extern char LocationText[MAX_LOCATION_DESC_LEN];
+ //
+ extern int anglefrac;
+ 
++// Player's view angle in degrees [0, ANGLES) including the sub-degree turn remainder.
++double player_get_view_angle() noexcept;
++
++// Smooth motion: frames are drawn at the display rate and the camera position is
++// interpolated between game tics. Game logic still runs on whole tics.
++void CalcTicsNoSleep();
++void smooth_motion_reset(bool is_active) noexcept;
++bool smooth_motion_is_active() noexcept;
++bool smooth_motion_is_tic_pending() noexcept;
++void smooth_motion_end_logic_frame() noexcept;
++// Mouse turn (in controlx units) not yet applied by game logic; drawn in frames between tics.
++void smooth_motion_set_preview_turn(double control_x) noexcept;
++double smooth_motion_get_preview_turn() noexcept;
++double player_get_view_x() noexcept;
++double player_get_view_y() noexcept;
++
++// Frame timing diagnostics: logs frames that miss a display refresh (dbg_frame_timing).
++void frame_timing_reset() noexcept;
++void frame_timing_begin_frame(bool is_logic_frame) noexcept;
++void frame_timing_mark_poll() noexcept;
++void frame_timing_mark_logic() noexcept;
++
+ extern std::uint16_t LastMsgPri;
+ extern std::int16_t MsgTicsRemain;
+ 
+@@ -3601,6 +3623,9 @@ extern statetype s_hold;
+ 
+ 
+ extern statetype s_swatwounded1;
++extern statetype s_swatwounded2;
++extern statetype s_swatwounded3;
++extern statetype s_swatwounded4;
+ 
+ extern statetype s_deathcam;
+ 
+@@ -3972,6 +3997,35 @@ void gp_vanilla_fizzle_fx(bool is_enabled);
+ bool gp_ps_map_in_stats() noexcept;
+ void gp_ps_map_in_stats(bool is_enabled);
+ 
++bool gp_show_crosshair() noexcept;
++void gp_show_crosshair(bool is_enabled);
++
++bool gp_smooth_motion() noexcept;
++void gp_smooth_motion(bool is_enabled);
++
++bool dbg_frame_timing() noexcept;
++
++bool gp_momentum() noexcept;
++void gp_momentum(bool is_enabled);
++int gp_momentum_accel_ms() noexcept;
++int gp_momentum_friction_ms() noexcept;
++bool gp_automap_secrets() noexcept;
++bool gp_possum_shootable() noexcept;
++bool gp_slow_strafe() noexcept;
++void gp_slow_strafe(bool is_enabled);
++int gp_strafe_speed_pct() noexcept;
++
++constexpr auto momentum_style_simple = 0;
++constexpr auto momentum_style_duke = 1;
++int gp_momentum_style() noexcept;
++void gp_momentum_style(int style);
++int gp_duke_speed_pct() noexcept;
++int gp_duke_strafe_pct() noexcept;
++bool gp_duke_slide() noexcept;
++
++// Clears the player's momentum (level start).
++void momentum_reset() noexcept;
++
+ bool am_rotatable() noexcept;
+ void am_rotatable(bool is_enable);
+ 
+diff --git a/src/bstone/src/3d_draw.cpp b/src/bstone/src/3d_draw.cpp
+index 91d946c3..983749db 100644
+--- a/src/bstone/src/3d_draw.cpp
++++ b/src/bstone/src/3d_draw.cpp
+@@ -7,6 +7,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ 
+ #include <cassert>
++#include <cmath>
++#include <cstdio>
+ #include <cstring>
+ 
+ #include <algorithm>
+@@ -1469,21 +1471,93 @@ void DrawPlayerWeapon()
+ 	}
+ }
+ 
+-void CalcTics()
++// Software-renderer crosshair (the hardware renderer draws its own).
++void DrawCrosshair()
+ {
+-	constexpr long long one_second_ns = 1'000'000'000;
+-	using Clock = std::chrono::steady_clock;
+-	using TimePoint = Clock::time_point;
+-	static long long period_counter = 0;
+-	static TimePoint last_time_point{};
+-	const TimePoint time_point = Clock::now();
+-	const long long diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(time_point - last_time_point).count();
+-	last_time_point = time_point;
+-	period_counter += diff_ns * TickBase;
+-	const long long elapsed_periods = period_counter / one_second_ns;
+-	period_counter %= one_second_ns;
+-	const std::chrono::nanoseconds delay{(one_second_ns - period_counter) / TickBase};
+-	std::this_thread::sleep_for(delay);
++	if (vid_is_hw() || !gp_show_crosshair())
++	{
++		return;
++	}
++
++	if (playstate == ex_died || playstate == ex_victorious)
++	{
++		return;
++	}
++
++	const auto unit = std::max(1, vga_height / 400);
++	const auto thickness = unit;
++	const auto arm = 4 * unit;
++	const auto gap = 2 * unit;
++
++	const auto cx = viewwidth / 2;
++	const auto cy = vga_3d_view_top_y + (viewheight / 2);
++
++	const auto fill = [](int x1, int y1, int x2, int y2, std::uint8_t color)
++	{
++		x1 = std::max(x1, 0);
++		x2 = std::min(x2, viewwidth);
++		y1 = std::max(y1, vga_3d_view_top_y);
++		y2 = std::min(y2, vga_3d_view_bottom_y);
++
++		for (int y = y1; y < y2; ++y)
++		{
++			for (int x = x1; x < x2; ++x)
++			{
++				vga_memory[vl_get_offset(0, x, y)] = color;
++			}
++		}
++	};
++
++	const int arms[4][4] =
++	{
++		{cx - gap - arm, cy, cx - gap, cy + thickness},
++		{cx + thickness + gap, cy, cx + thickness + gap + arm, cy + thickness},
++		{cx, cy - gap - arm, cx + thickness, cy - gap},
++		{cx, cy + thickness + gap, cx + thickness, cy + thickness + gap + arm},
++	};
++
++	for (const auto& a : arms)
++	{
++		fill(a[0] - unit, a[1] - unit, a[2] + unit, a[3] + unit, BLACK);
++	}
++
++	for (const auto& a : arms)
++	{
++		fill(a[0], a[1], a[2], a[3], WHITE);
++	}
++}
++
++namespace {
++
++constexpr long long calc_tics_one_second_ns = 1'000'000'000;
++using CalcTicsClock = std::chrono::steady_clock;
++long long calc_tics_period_counter = 0;
++CalcTicsClock::time_point calc_tics_last_time_point{};
++
++// Smooth motion state (see smooth_motion_reset).
++bool smooth_motion_active_ = false;
++double smooth_motion_prev_x_ = 0.0;
++double smooth_motion_prev_y_ = 0.0;
++double smooth_motion_cur_x_ = 0.0;
++double smooth_motion_cur_y_ = 0.0;
++int smooth_motion_span_ = 1;
++double smooth_motion_preview_turn_ = 0.0;
++
++void calc_tics_impl(bool is_sleep)
++{
++	const auto time_point = CalcTicsClock::now();
++	const long long diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(time_point - calc_tics_last_time_point).count();
++	calc_tics_last_time_point = time_point;
++	calc_tics_period_counter += diff_ns * TickBase;
++	const long long elapsed_periods = calc_tics_period_counter / calc_tics_one_second_ns;
++	calc_tics_period_counter %= calc_tics_one_second_ns;
++
++	if (is_sleep)
++	{
++		const std::chrono::nanoseconds delay{(calc_tics_one_second_ns - calc_tics_period_counter) / TickBase};
++		std::this_thread::sleep_for(delay);
++	}
++
+ 	constexpr long long min_tics = 1;
+ 	constexpr long long max_tics = UINT16_MAX;
+ 	tics = static_cast<std::uint16_t>(bstone::clamp(elapsed_periods, min_tics, max_tics));
+@@ -1507,6 +1581,294 @@ void CalcTics()
+ 	}
+ }
+ 
++// Game tics elapsed since the last CalcTics call (fractional).
++double calc_tics_get_pending() noexcept
++{
++	const auto diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++		CalcTicsClock::now() - calc_tics_last_time_point).count();
++
++	return static_cast<double>(calc_tics_period_counter + (diff_ns * TickBase)) / calc_tics_one_second_ns;
++}
++
++} // namespace
++
++void CalcTics()
++{
++	calc_tics_impl(true);
++}
++
++void CalcTicsNoSleep()
++{
++	calc_tics_impl(false);
++}
++
++void smooth_motion_reset(bool is_active) noexcept
++{
++	smooth_motion_active_ = is_active;
++	calc_tics_period_counter = 0;
++	calc_tics_last_time_point = CalcTicsClock::now();
++	smooth_motion_prev_x_ = player->x;
++	smooth_motion_prev_y_ = player->y;
++	smooth_motion_cur_x_ = player->x;
++	smooth_motion_cur_y_ = player->y;
++	smooth_motion_span_ = 1;
++	smooth_motion_preview_turn_ = 0.0;
++}
++
++bool smooth_motion_is_active() noexcept
++{
++	return smooth_motion_active_;
++}
++
++bool smooth_motion_is_tic_pending() noexcept
++{
++	return calc_tics_get_pending() >= 1.0;
++}
++
++void smooth_motion_end_logic_frame() noexcept
++{
++	smooth_motion_prev_x_ = smooth_motion_cur_x_;
++	smooth_motion_prev_y_ = smooth_motion_cur_y_;
++	smooth_motion_cur_x_ = player->x;
++	smooth_motion_cur_y_ = player->y;
++	smooth_motion_span_ = std::max(static_cast<int>(tics), 1);
++	smooth_motion_preview_turn_ = 0.0;
++
++	// Don't slide across teleports, elevators and level changes.
++	const auto dx = smooth_motion_cur_x_ - smooth_motion_prev_x_;
++	const auto dy = smooth_motion_cur_y_ - smooth_motion_prev_y_;
++
++	if ((dx * dx) + (dy * dy) > 1.0)
++	{
++		smooth_motion_prev_x_ = smooth_motion_cur_x_;
++		smooth_motion_prev_y_ = smooth_motion_cur_y_;
++	}
++}
++
++void smooth_motion_set_preview_turn(double control_x) noexcept
++{
++	smooth_motion_preview_turn_ = control_x;
++}
++
++double smooth_motion_get_preview_turn() noexcept
++{
++	return smooth_motion_active_ ? smooth_motion_preview_turn_ : 0.0;
++}
++
++namespace {
++
++// Interpolation factor between the previous and the current logic frame.
++// The camera is drawn one tic behind the game so it always has two states to blend.
++double smooth_motion_get_alpha() noexcept
++{
++	if (!smooth_motion_active_)
++	{
++		return 1.0;
++	}
++
++	const auto pending = bstone::clamp(calc_tics_get_pending(), 0.0, 1.0);
++	const auto span = static_cast<double>(smooth_motion_span_);
++
++	return bstone::clamp((span - 1.0 + pending) / span, 0.0, 1.0);
++}
++
++// Frame timing diagnostics (dbg_frame_timing).
++
++using FrameTimingClock = std::chrono::steady_clock;
++
++bool frame_timing_in_frame_ = false;
++bool frame_timing_is_logic_frame_ = false;
++FrameTimingClock::time_point frame_timing_begin_{};
++FrameTimingClock::time_point frame_timing_poll_{};
++FrameTimingClock::time_point frame_timing_logic_{};
++FrameTimingClock::time_point frame_timing_draw_{};
++FrameTimingClock::time_point frame_timing_last_present_{};
++FrameTimingClock::time_point frame_timing_summary_begin_{};
++
++int frame_timing_frames_ = 0;
++int frame_timing_logic_frames_ = 0;
++int frame_timing_slow_frames_ = 0;
++int frame_timing_slow_lines_ = 0;
++double frame_timing_max_interval_ms_ = 0.0;
++double frame_timing_draw_sum_ms_ = 0.0;
++double frame_timing_present_sum_ms_ = 0.0;
++
++double frame_timing_ms(FrameTimingClock::time_point from, FrameTimingClock::time_point to) noexcept
++{
++	return std::chrono::duration<double, std::milli>(to - from).count();
++}
++
++void frame_timing_log(const std::string& message)
++{
++	bstone::globals::logger->log(bstone::LoggerMessageType::information, ("[FT] " + message).c_str());
++}
++
++std::string frame_timing_to_string(double value)
++{
++	char buffer[32];
++	std::snprintf(buffer, sizeof(buffer), "%.2f", value);
++	return buffer;
++}
++
++// False when smoothing is off or the player was moved outside of the play loop's logic.
++bool smooth_motion_is_camera_tracking() noexcept
++{
++	return smooth_motion_active_ && player->x == smooth_motion_cur_x_ && player->y == smooth_motion_cur_y_;
++}
++
++} // namespace
++
++double player_get_view_x() noexcept
++{
++	if (!smooth_motion_is_camera_tracking())
++	{
++		return player->x;
++	}
++
++	return smooth_motion_prev_x_ + ((smooth_motion_cur_x_ - smooth_motion_prev_x_) * smooth_motion_get_alpha());
++}
++
++double player_get_view_y() noexcept
++{
++	if (!smooth_motion_is_camera_tracking())
++	{
++		return player->y;
++	}
++
++	return smooth_motion_prev_y_ + ((smooth_motion_cur_y_ - smooth_motion_prev_y_) * smooth_motion_get_alpha());
++}
++
++void frame_timing_reset() noexcept
++{
++	frame_timing_in_frame_ = false;
++	frame_timing_last_present_ = FrameTimingClock::time_point{};
++	frame_timing_summary_begin_ = FrameTimingClock::now();
++	frame_timing_frames_ = 0;
++	frame_timing_logic_frames_ = 0;
++	frame_timing_slow_frames_ = 0;
++	frame_timing_max_interval_ms_ = 0.0;
++	frame_timing_draw_sum_ms_ = 0.0;
++	frame_timing_present_sum_ms_ = 0.0;
++}
++
++void frame_timing_begin_frame(bool is_logic_frame) noexcept
++{
++	if (!dbg_frame_timing())
++	{
++		return;
++	}
++
++	frame_timing_in_frame_ = true;
++	frame_timing_is_logic_frame_ = is_logic_frame;
++	frame_timing_begin_ = FrameTimingClock::now();
++	frame_timing_poll_ = frame_timing_begin_;
++	frame_timing_logic_ = frame_timing_begin_;
++	frame_timing_draw_ = frame_timing_begin_;
++}
++
++void frame_timing_mark_poll() noexcept
++{
++	if (frame_timing_in_frame_)
++	{
++		frame_timing_poll_ = FrameTimingClock::now();
++		frame_timing_logic_ = frame_timing_poll_;
++	}
++}
++
++void frame_timing_mark_logic() noexcept
++{
++	if (frame_timing_in_frame_)
++	{
++		frame_timing_logic_ = FrameTimingClock::now();
++	}
++}
++
++namespace {
++
++void frame_timing_mark_draw() noexcept
++{
++	if (frame_timing_in_frame_)
++	{
++		frame_timing_draw_ = FrameTimingClock::now();
++	}
++}
++
++// Called after the frame was presented. Logs frames that missed a display refresh.
++void frame_timing_end_frame()
++{
++	if (!frame_timing_in_frame_)
++	{
++		return;
++	}
++
++	frame_timing_in_frame_ = false;
++
++	const auto present = FrameTimingClock::now();
++	const auto has_previous = (frame_timing_last_present_ != FrameTimingClock::time_point{});
++	const auto interval_ms = has_previous ? frame_timing_ms(frame_timing_last_present_, present) : 0.0;
++	frame_timing_last_present_ = present;
++
++	const auto poll_ms = frame_timing_ms(frame_timing_begin_, frame_timing_poll_);
++	const auto logic_ms = frame_timing_ms(frame_timing_poll_, frame_timing_logic_);
++	const auto draw_ms = frame_timing_ms(frame_timing_logic_, frame_timing_draw_);
++	const auto present_ms = frame_timing_ms(frame_timing_draw_, present);
++
++	// Long gaps are pauses (menus, level loads), not slow frames.
++	if (interval_ms > 250.0)
++	{
++		return;
++	}
++
++	frame_timing_frames_ += 1;
++	frame_timing_logic_frames_ += frame_timing_is_logic_frame_ ? 1 : 0;
++	frame_timing_draw_sum_ms_ += draw_ms;
++	frame_timing_present_sum_ms_ += present_ms;
++	frame_timing_max_interval_ms_ = std::max(frame_timing_max_interval_ms_, interval_ms);
++
++	const auto refresh_rate = std::max(vid_cfg_get_refresh_rate(), 30);
++	const auto slow_threshold_ms = 1.5 * 1000.0 / refresh_rate;
++
++	if (interval_ms > slow_threshold_ms)
++	{
++		frame_timing_slow_frames_ += 1;
++
++		if (frame_timing_slow_lines_ < 2000)
++		{
++			frame_timing_slow_lines_ += 1;
++
++			frame_timing_log(
++				"slow frame " + frame_timing_to_string(interval_ms) + " ms (" +
++				(frame_timing_is_logic_frame_ ? "logic, tics " + std::to_string(tics) : std::string{"in-between"}) +
++				"): input " + frame_timing_to_string(poll_ms) +
++				", logic " + frame_timing_to_string(logic_ms) +
++				", draw " + frame_timing_to_string(draw_ms) +
++				", present " + frame_timing_to_string(present_ms));
++		}
++	}
++
++	const auto summary_ms = frame_timing_ms(frame_timing_summary_begin_, present);
++
++	if (summary_ms >= 5000.0)
++	{
++		const auto frames = std::max(frame_timing_frames_, 1);
++
++		frame_timing_log(
++			"summary " + frame_timing_to_string(summary_ms / 1000.0) + " s: " +
++			std::to_string(frame_timing_frames_) + " frames (" +
++			frame_timing_to_string(frame_timing_frames_ * 1000.0 / summary_ms) + " fps, " +
++			std::to_string(frame_timing_logic_frames_) + " logic), slow " +
++			std::to_string(frame_timing_slow_frames_) +
++			", max interval " + frame_timing_to_string(frame_timing_max_interval_ms_) +
++			" ms, avg draw " + frame_timing_to_string(frame_timing_draw_sum_ms_ / frames) +
++			" ms, avg present " + frame_timing_to_string(frame_timing_present_sum_ms_ / frames) + " ms");
++
++		frame_timing_reset();
++		frame_timing_last_present_ = present;
++	}
++}
++
++} // namespace
++
+ void WallRefresh()
+ {
+ 	//
+@@ -1514,17 +1876,22 @@ void WallRefresh()
+ 	//
+ 
+ 	viewangle = player->angle;
+-	midangle = viewangle * (FINEANGLES / ANGLES);
+-	viewsin = sintable[viewangle];
+-	viewcos = costable[viewangle];
+-	viewx = player->x - (focallength * viewcos);
+-	viewy = player->y + (focallength * viewsin);
++
++	const auto view_angle = player_get_view_angle();
++	midangle = static_cast<int>(std::lround(view_angle * (FINEANGLES / ANGLES))) % FINEANGLES;
++	const auto view_angle_rad = bstone::math::deg_to_rad(view_angle);
++	viewsin = std::sin(view_angle_rad);
++	viewcos = std::cos(view_angle_rad);
++	const auto player_view_x = player_get_view_x();
++	const auto player_view_y = player_get_view_y();
++	viewx = player_view_x - (focallength * viewcos);
++	viewy = player_view_y + (focallength * viewsin);
+ 
+ 	focaltx = static_cast<int>(viewx);
+ 	focalty = static_cast<int>(viewy);
+ 
+-	viewtx = static_cast<int>(player->x);
+-	viewty = static_cast<int>(player->y);
++	viewtx = static_cast<int>(player_view_x);
++	viewty = static_cast<int>(player_view_y);
+ 
+ 	xpartialdown = get_fractional(viewx);
+ 	xpartialup = 1.0 - xpartialdown;
+@@ -1651,6 +2018,7 @@ void ThreeDRefresh()
+ 	vid_is_3d = false;
+ 
+ 	DrawPlayerWeapon(); // draw player's hands
++	DrawCrosshair();
+ 
+ //
+ // show screen and time last cycle
+@@ -1680,7 +2048,9 @@ void ThreeDRefresh()
+ 	}
+ 
+ 	// BBi
++	frame_timing_mark_draw();
+ 	VL_RefreshScreen();
++	frame_timing_end_frame();
+ 
+ 	frameon++;
+ }
+@@ -1843,6 +2213,8 @@ void ShowOverhead(
+ 	const auto diameter = static_cast<int>(radius * 2.0);
+ 
+ 	const auto is_show_all = ((flags & OV_SHOWALL) != 0);
++	const auto is_show_secrets = gp_automap_secrets();
++	const auto pwall_color = (assets_info.is_aog() ? PWALL_COLOR : std::uint8_t{0x79});
+ 
+ 	// Draw rotated radar.
+ 	//
+@@ -1974,7 +2346,8 @@ void ShowOverhead(
+ 						}
+ 					}
+ 
+-					if ((ExtraRadarFlags & OV_PUSHWALLS) != 0 ||
++					if (is_show_secrets ||
++						(ExtraRadarFlags & OV_PUSHWALLS) != 0 ||
+ 						(assets_info.is_ps() && zoom == 4 && (flags & OV_PUSHWALLS) != 0))
+ 					{
+ 						auto iconnum = mapsegs[1][farmapylookup[my] + mx];
+@@ -1983,9 +2356,9 @@ void ShowOverhead(
+ 						//
+ 						if (iconnum == PUSHABLETILE)
+ 						{
+-							if (show_pwalls_on_automap(mx, my, is_show_all))
++							if (show_pwalls_on_automap(mx, my, is_show_all || is_show_secrets))
+ 							{
+-								color = (assets_info.is_aog() ? PWALL_COLOR : 0x79);
++								color = pwall_color;
+ 							}
+ 						}
+ 					}
+@@ -1993,6 +2366,29 @@ void ShowOverhead(
+ 				else
+ 				{
+ 					color = UNMAPPED_COLOR;
++
++					// SHOW SECRETS (gp_automap_secrets): pushwalls and hidden-area
++					// floors are revealed even before they have been visited.
++					//
++					if (is_show_secrets)
++					{
++						const auto tile = tilemap[mx][my];
++
++						if (tile != 0 &&
++							mapsegs[1][farmapylookup[my] + mx] == PUSHABLETILE)
++						{
++							color = pwall_color;
++						}
++						else if (tile == 0 || (tile & 0xC0) != 0)
++						{
++							static_cast<void>(GetAreaNumber(mx, my));
++
++							if (GAN_HiddenArea)
++							{
++								color = HIDDEN_COLOR;
++							}
++						}
++					}
+ 				}
+ 			}
+ 
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index fb2442a9..3f0298ea 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11072,6 +11072,172 @@ auto gp_ps_map_in_stats_cvar = bstone::CVar{
+ 	bstone::CVarFlags::archive,
+ 	gp_ps_map_in_stats_default};
+ 
++// gp_show_crosshair
++
++constexpr auto gp_show_crosshair_cvar_name = bstone::StringView{"gp_show_crosshair"};
++constexpr auto gp_show_crosshair_default = true;
++
++auto gp_show_crosshair_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_show_crosshair_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_show_crosshair_default};
++
++// gp_smooth_motion
++
++constexpr auto gp_smooth_motion_cvar_name = bstone::StringView{"gp_smooth_motion"};
++constexpr auto gp_smooth_motion_default = true;
++
++auto gp_smooth_motion_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_smooth_motion_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_smooth_motion_default};
++
++// dbg_frame_timing
++
++constexpr auto dbg_frame_timing_cvar_name = bstone::StringView{"dbg_frame_timing"};
++constexpr auto dbg_frame_timing_default = false;
++
++auto dbg_frame_timing_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	dbg_frame_timing_cvar_name,
++	bstone::CVarFlags::archive,
++	dbg_frame_timing_default};
++
++// gp_momentum
++
++constexpr auto gp_momentum_cvar_name = bstone::StringView{"gp_momentum"};
++constexpr auto gp_momentum_default = true;
++
++auto gp_momentum_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_momentum_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_momentum_default};
++
++// gp_momentum_accel_ms (time from standing to full run speed)
++
++constexpr auto gp_momentum_accel_ms_cvar_name = bstone::StringView{"gp_momentum_accel_ms"};
++constexpr auto gp_momentum_accel_ms_default = 120;
++
++auto gp_momentum_accel_ms_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_momentum_accel_ms_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_momentum_accel_ms_default,
++	0,
++	2000};
++
++// gp_momentum_friction_ms (time from full run speed to standing)
++
++constexpr auto gp_momentum_friction_ms_cvar_name = bstone::StringView{"gp_momentum_friction_ms"};
++constexpr auto gp_momentum_friction_ms_default = 150;
++
++auto gp_momentum_friction_ms_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_momentum_friction_ms_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_momentum_friction_ms_default,
++	0,
++	2000};
++
++// gp_automap_secrets (automap always shows pushwalls and hidden areas)
++
++constexpr auto gp_automap_secrets_cvar_name = bstone::StringView{"gp_automap_secrets"};
++constexpr auto gp_automap_secrets_default = true;
++
++auto gp_automap_secrets_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_automap_secrets_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_automap_secrets_default};
++
++// gp_possum_shootable (Star Troopers playing possum can still be shot)
++
++constexpr auto gp_possum_shootable_cvar_name = bstone::StringView{"gp_possum_shootable"};
++constexpr auto gp_possum_shootable_default = true;
++
++auto gp_possum_shootable_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_possum_shootable_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_possum_shootable_default};
++
++// gp_slow_strafe (sideways movement uses gp_strafe_speed_pct of normal speed)
++
++constexpr auto gp_slow_strafe_cvar_name = bstone::StringView{"gp_slow_strafe"};
++constexpr auto gp_slow_strafe_default = true;
++
++auto gp_slow_strafe_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_slow_strafe_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_slow_strafe_default};
++
++// gp_strafe_speed_pct (sideways speed in percent of normal speed)
++
++constexpr auto gp_strafe_speed_pct_cvar_name = bstone::StringView{"gp_strafe_speed_pct"};
++
++// gp_momentum_style (0: simple ramp, 1: Duke Nukem 3D)
++
++constexpr auto gp_momentum_style_cvar_name = bstone::StringView{"gp_momentum_style"};
++constexpr auto gp_momentum_style_default = momentum_style_duke;
++
++auto gp_momentum_style_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_momentum_style_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_momentum_style_default,
++	momentum_style_simple,
++	momentum_style_duke};
++
++// gp_duke_speed_pct (Duke style forward/back top speed in percent of Duke's speed scaled to Blake Stone)
++
++constexpr auto gp_duke_speed_pct_cvar_name = bstone::StringView{"gp_duke_speed_pct"};
++
++// gp_duke_strafe_pct (Duke style sideways top speed, same scale)
++
++constexpr auto gp_duke_strafe_pct_cvar_name = bstone::StringView{"gp_duke_strafe_pct"};
++
++// gp_duke_slide (Duke style acceleration/stopping slide; off = instant start and stop)
++
++constexpr auto gp_duke_slide_cvar_name = bstone::StringView{"gp_duke_slide"};
++constexpr auto gp_duke_slide_default = false;
++
++auto gp_duke_slide_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_duke_slide_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_duke_slide_default};
++constexpr auto gp_duke_strafe_pct_default = 100;
++
++auto gp_duke_strafe_pct_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_duke_strafe_pct_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_duke_strafe_pct_default,
++	25,
++	400};
++constexpr auto gp_duke_speed_pct_default = 200;
++
++auto gp_duke_speed_pct_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_duke_speed_pct_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_duke_speed_pct_default,
++	25,
++	400};
++constexpr auto gp_strafe_speed_pct_default = 40;
++
++auto gp_strafe_speed_pct_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_strafe_speed_pct_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_strafe_speed_pct_default,
++	10,
++	100};
++
+ } // namespace
+ 
+ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+@@ -11090,6 +11256,20 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_no_weapon_bobbing_cvar);
+ 	cvar_mgr.add(gp_vanilla_fizzle_fx_cvar);
+ 	cvar_mgr.add(gp_ps_map_in_stats_cvar);
++	cvar_mgr.add(gp_show_crosshair_cvar);
++	cvar_mgr.add(gp_smooth_motion_cvar);
++	cvar_mgr.add(dbg_frame_timing_cvar);
++	cvar_mgr.add(gp_momentum_cvar);
++	cvar_mgr.add(gp_momentum_accel_ms_cvar);
++	cvar_mgr.add(gp_momentum_friction_ms_cvar);
++	cvar_mgr.add(gp_automap_secrets_cvar);
++	cvar_mgr.add(gp_possum_shootable_cvar);
++	cvar_mgr.add(gp_slow_strafe_cvar);
++	cvar_mgr.add(gp_strafe_speed_pct_cvar);
++	cvar_mgr.add(gp_momentum_style_cvar);
++	cvar_mgr.add(gp_duke_speed_pct_cvar);
++	cvar_mgr.add(gp_duke_strafe_pct_cvar);
++	cvar_mgr.add(gp_duke_slide_cvar);
+ }
+ 
+ namespace {
+@@ -11252,6 +11432,100 @@ void gp_ps_map_in_stats(bool is_enabled)
+ 	gp_ps_map_in_stats_cvar.set_bool(is_enabled);
+ }
+ 
++bool gp_show_crosshair() noexcept
++{
++	return gp_show_crosshair_cvar.get_bool();
++}
++
++void gp_show_crosshair(bool is_enabled)
++{
++	gp_show_crosshair_cvar.set_bool(is_enabled);
++}
++bool gp_smooth_motion() noexcept
++{
++	return gp_smooth_motion_cvar.get_bool();
++}
++
++void gp_smooth_motion(bool is_enabled)
++{
++	gp_smooth_motion_cvar.set_bool(is_enabled);
++}
++
++bool dbg_frame_timing() noexcept
++{
++	return dbg_frame_timing_cvar.get_bool();
++}
++
++bool gp_momentum() noexcept
++{
++	return gp_momentum_cvar.get_bool();
++}
++
++void gp_momentum(bool is_enabled)
++{
++	gp_momentum_cvar.set_bool(is_enabled);
++}
++
++int gp_momentum_accel_ms() noexcept
++{
++	return gp_momentum_accel_ms_cvar.get_int32();
++}
++
++int gp_momentum_friction_ms() noexcept
++{
++	return gp_momentum_friction_ms_cvar.get_int32();
++}
++
++bool gp_automap_secrets() noexcept
++{
++	return gp_automap_secrets_cvar.get_bool();
++}
++
++bool gp_possum_shootable() noexcept
++{
++	return gp_possum_shootable_cvar.get_bool();
++}
++
++bool gp_slow_strafe() noexcept
++{
++	return gp_slow_strafe_cvar.get_bool();
++}
++
++void gp_slow_strafe(bool is_enabled)
++{
++	gp_slow_strafe_cvar.set_bool(is_enabled);
++}
++
++int gp_strafe_speed_pct() noexcept
++{
++	return gp_strafe_speed_pct_cvar.get_int32();
++}
++
++int gp_momentum_style() noexcept
++{
++	return gp_momentum_style_cvar.get_int32();
++}
++
++void gp_momentum_style(int style)
++{
++	gp_momentum_style_cvar.set_int32(style);
++}
++
++int gp_duke_speed_pct() noexcept
++{
++	return gp_duke_speed_pct_cvar.get_int32();
++}
++
++int gp_duke_strafe_pct() noexcept
++{
++	return gp_duke_strafe_pct_cvar.get_int32();
++}
++
++bool gp_duke_slide() noexcept
++{
++	return gp_duke_slide_cvar.get_bool();
++}
++
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();
+diff --git a/src/bstone/src/3d_menu.cpp b/src/bstone/src/3d_menu.cpp
+index 1bdf15b5..f1680a87 100644
+--- a/src/bstone/src/3d_menu.cpp
++++ b/src/bstone/src/3d_menu.cpp
+@@ -119,6 +119,10 @@ enum sw2_labels
+ 	SW2_NO_WEAPON_BOBBING,
+ 	SW2_VANILLA_FIZZLE_FX,
+ 	SW2_PS_MAP_IN_STATS,
++	SW2_SHOW_CROSSHAIR,
++	SW2_SMOOTH_MOTION,
++	SW2_MOMENTUM,
++	SW2_SLOW_STRAFE,
+ }; // sw2_labels
+ 
+ enum MenuVideoLables
+@@ -420,7 +424,7 @@ CP_iteminfo SwitchItems = {MENU_X, 0, 0, 0, 0, 9, {87, -1, 132, 7, 1}};
+ CP_iteminfo video_items = {MENU_X, MENU_Y + 30, 5, 0, 0, 9, {77, -1, 154, 7, 1}};
+ CP_iteminfo video_mode_items = {MENU_X - 31, MENU_Y + 10, 8, 0, 0, 9, {67, -1, 184, 7, 1}};
+ CP_iteminfo texturing_items = {MENU_X, MENU_Y + 10, 7, 0, 0, 9, {77, -1, 154, 7, 1}};
+-CP_iteminfo switches2_items = {MENU_X, MENU_Y + 30, 5, 0, 0, 9, {87, -1, 132, 7, 1}};
++CP_iteminfo switches2_items = {MENU_X, MENU_Y + 3, 9, 0, 0, 9, {87, -1, 132, 7, 1}};
+ // BBi
+ 
+ 
+@@ -495,6 +499,10 @@ CP_itemtype switch2_menu[] =
+ 	{AT_ENABLED, "NO WEAPON BOBBING", 0},
+ 	{AT_ENABLED, "VANILLA FIZZLE FX", 0},
+ 	{AT_ENABLED, "[PS] MAP IN STATS", 0},
++	{AT_ENABLED, "SHOW CROSSHAIR", 0},
++	{AT_ENABLED, "SMOOTH MOTION", 0},
++	{AT_ENABLED, "MOMENTUM", 0},
++	{AT_ENABLED, "SLOW STRAFE", 0},
+ };
+ 
+ CP_itemtype NewEmenu[] = {
+@@ -6100,6 +6108,10 @@ void draw_switch2_description(
+ 		"TOGGLES WEAPON BOBBING",
+ 		"TOGGLES VANILLA FIZZLE FX",
+ 		"TOGGLES MAP IN STATS (PLANET STRIKE)",
++		"TOGGLES AIMING CROSSHAIR",
++		"TOGGLES DRAWING BETWEEN GAME TICS",
++		"TOGGLES MOVEMENT ACCELERATION",
++		"TOGGLES SLOWER SIDEWAYS MOVEMENT",
+ 	};
+ 
+ 	const auto& assets_info = get_assets_info();
+@@ -6113,14 +6125,22 @@ void draw_switch2_description(
+ 
+ 	VWB_Bar(WindowX, WindowY - 1, WindowW, WindowH, menu_background_color);
+ 
++	const char* text = instr[which];
++
++	if (which == SW2_MOMENTUM)
++	{
++		text = !gp_momentum() ? "MOMENTUM: OFF" :
++			(gp_momentum_style() == momentum_style_duke ? "MOMENTUM: DUKE NUKEM 3D" : "MOMENTUM: SIMPLE");
++	}
++
+ 	SETFONTCOLOR(TERM_SHADOW_COLOR, TERM_BACK_COLOR);
+-	US_PrintCentered(instr[which]);
++	US_PrintCentered(text);
+ 
+ 	WindowX--;
+ 	WindowY--;
+ 
+ 	SETFONTCOLOR(INSTRUCTIONS_TEXT_COLOR, TERM_BACK_COLOR);
+-	US_PrintCentered(instr[which]);
++	US_PrintCentered(text);
+ }
+ 
+ void draw_all_switch2_lights(
+@@ -6183,6 +6203,34 @@ void draw_all_switch2_lights(
+ 					shape += 1;
+ 				}
+ 				break;
++
++			case SW2_SHOW_CROSSHAIR:
++				if (gp_show_crosshair())
++				{
++					shape += 1;
++				}
++				break;
++
++			case SW2_SMOOTH_MOTION:
++				if (gp_smooth_motion())
++				{
++					shape += 1;
++				}
++				break;
++
++			case SW2_MOMENTUM:
++				if (gp_momentum())
++				{
++					shape += 1;
++				}
++				break;
++
++			case SW2_SLOW_STRAFE:
++				if (gp_slow_strafe())
++				{
++					shape += 1;
++				}
++				break;
+ 			}
+ 
+ 			VWB_DrawPic(switches2_items.x - 16, switches2_items.y + (i * switches2_items.y_spacing) - 1, shape);
+@@ -6211,6 +6259,9 @@ void draw_switch2_menu()
+ void cp_switches2(
+ 	std::int16_t)
+ {
++	// Nine items: start higher on Planet Strike, whose description line sits higher.
++	switches2_items.y = MENU_Y + (get_assets_info().is_ps() ? -6 : 3);
++
+ 	CA_CacheScreen(BACKGROUND_SCREENPIC);
+ 	draw_switch2_menu();
+ 	MenuFadeIn();
+@@ -6253,6 +6304,43 @@ void cp_switches2(
+ 			ShootSnd();
+ 			draw_switch2_menu();
+ 			break;
++
++		case SW2_SHOW_CROSSHAIR:
++			gp_show_crosshair(!gp_show_crosshair());
++			ShootSnd();
++			draw_switch2_menu();
++			break;
++
++		case SW2_SMOOTH_MOTION:
++			gp_smooth_motion(!gp_smooth_motion());
++			ShootSnd();
++			draw_switch2_menu();
++			break;
++
++		case SW2_MOMENTUM:
++			// Cycles off -> simple -> Duke Nukem 3D -> off.
++			if (!gp_momentum())
++			{
++				gp_momentum(true);
++				gp_momentum_style(momentum_style_simple);
++			}
++			else if (gp_momentum_style() == momentum_style_simple)
++			{
++				gp_momentum_style(momentum_style_duke);
++			}
++			else
++			{
++				gp_momentum(false);
++			}
++			ShootSnd();
++			draw_switch2_menu();
++			break;
++
++		case SW2_SLOW_STRAFE:
++			gp_slow_strafe(!gp_slow_strafe());
++			ShootSnd();
++			draw_switch2_menu();
++			break;
+ 		}
+ 	} while (which >= 0);
+ 
+diff --git a/src/bstone/src/3d_play.cpp b/src/bstone/src/3d_play.cpp
+index 8910f0c8..40516000 100644
+--- a/src/bstone/src/3d_play.cpp
++++ b/src/bstone/src/3d_play.cpp
+@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
+ */
+ 
+ 
++#include <cmath>
+ #include <cstring>
+ 
+ #include "audio.h"
+@@ -507,6 +508,36 @@ void PollKeyboardMove()
+ 	}
+ }
+ 
++namespace {
++
++// Fractional mouse turn carried over to the next frame so small movements aren't truncated away.
++double mouse_delta_x_remainder = 0.0;
++
++// Mouse turn in controlx units, including the carried-over fraction.
++double get_mouse_turn(int mousexmove) noexcept
++{
++	const auto move_scale = 1.0 + (in_get_mouse_sensitivity() / 6.0);
++
++	return (mousexmove * move_scale) + mouse_delta_x_remainder;
++}
++
++} // namespace
++
++// Shows the mouse turn accumulated since the last game tic without consuming it.
++void PollMousePreview()
++{
++	if (!in_is_mouse_enabled())
++	{
++		return;
++	}
++
++	int mousexmove;
++	int mouseymove;
++	in_get_mouse_deltas(mousexmove, mouseymove);
++
++	smooth_motion_set_preview_turn(std::trunc(get_mouse_turn(mousexmove)));
++}
++
+ void PollMouseMove()
+ {
+ 	int mousexmove;
+@@ -524,7 +555,7 @@ void PollMouseMove()
+ 
+ 	const auto move_scale = 1.0 + (in_get_mouse_sensitivity() / 6.0);
+ 
+-	auto delta_x = static_cast<double>(mousexmove);
++	auto delta_x = get_mouse_turn(mousexmove);
+ 	auto delta_y = static_cast<double>(mouseymove);
+ 
+ 	if (is_running)
+@@ -538,9 +569,12 @@ void PollMouseMove()
+ 
+ 	delta_y = 0.0;
+ 
+-	delta_x *= move_scale;
+ 	delta_y *= move_scale;
+ 
++	const auto whole_delta_x = std::trunc(delta_x);
++	mouse_delta_x_remainder = delta_x - whole_delta_x;
++	delta_x = whole_delta_x;
++
+ 	controlx += static_cast<int>(delta_x);
+ 	controly += static_cast<int>(delta_y);
+ }
+@@ -604,7 +638,15 @@ void PollControls()
+ 	//
+ 	// get timing info for last frame
+ 	//
+-	CalcTics();
++	if (smooth_motion_is_active())
++	{
++		// PlayLoop already waited for a whole tic while drawing in-between frames.
++		CalcTicsNoSleep();
++	}
++	else
++	{
++		CalcTics();
++	}
+ 
+ 	// BBi
+ 	in_handle_events();
+@@ -2025,9 +2067,45 @@ void PlayLoop()
+ 		IN_StartAck();
+ 	}
+ 
++	smooth_motion_reset(gp_smooth_motion() && !demoplayback);
++	frame_timing_reset();
++	momentum_reset();
++
+ 	do
+ 	{
++		// Pick up the menu switch without restarting the level.
++		const auto is_smooth_motion = gp_smooth_motion() && !demoplayback;
++
++		if (is_smooth_motion != smooth_motion_is_active())
++		{
++			smooth_motion_reset(is_smooth_motion);
++		}
++
++		if (smooth_motion_is_active())
++		{
++			// Draw frames at the display rate until the next game tic is due.
++			// Game logic doesn't run here, so nothing should count down.
++			const auto saved_tics = tics;
++			tics = 0;
++
++			while (!smooth_motion_is_tic_pending() && !playstate && !startgame)
++			{
++				frame_timing_begin_frame(false);
++				in_handle_events();
++				PollMousePreview();
++				frame_timing_mark_poll();
++
++				vid_is_hud = true;
++				ThreeDRefresh();
++				vid_is_hud = false;
++			}
++
++			tics = saved_tics;
++		}
++
++		frame_timing_begin_frame(true);
+ 		PollControls();
++		frame_timing_mark_poll();
+ 
+ 		//
+ 		// actor thinking
+@@ -2076,6 +2154,9 @@ void PlayLoop()
+ 			CheckSpawnGoldstern();
+ 		}
+ 
++		frame_timing_mark_logic();
++		smooth_motion_end_logic_frame();
++
+ 		vid_is_hud = true;
+ 		UpdatePaletteShifts();
+ 
+@@ -2129,6 +2210,8 @@ void PlayLoop()
+ 
+ 	} while (!playstate && !startgame);
+ 
++	smooth_motion_reset(false);
++
+ 	if (playstate != ex_died)
+ 	{
+ 		FinishPaletteShifts();
+diff --git a/src/bstone/src/3d_state.cpp b/src/bstone/src/3d_state.cpp
+index f95caace..1cf86b5c 100644
+--- a/src/bstone/src/3d_state.cpp
++++ b/src/bstone/src/3d_state.cpp
+@@ -1423,6 +1423,18 @@ void DamageActor(
+ 		return;
+ 	}
+ 
++	// gp_possum_shootable: any hit on a Star Trooper playing possum finishes it.
++	//
++	if (gp_possum_shootable() &&
++		ob->obclass == swatobj &&
++		(ob->state == &s_swatwounded1 ||
++			ob->state == &s_swatwounded2 ||
++			ob->state == &s_swatwounded3 ||
++			ob->state == &s_swatwounded4))
++	{
++		damage = static_cast<std::uint16_t>(ob->hitpoints > 0 ? ob->hitpoints : 1);
++	}
++
+ 	const auto& assets_info = get_assets_info();
+ 
+ 	switch (ob->obclass)
+@@ -1570,6 +1582,12 @@ void DamageActor(
+ 
+ 				NewState(ob, &s_swatwounded1);
+ 				ob->flags &= ~(FL_SHOOTABLE | FL_SOLID);
++
++				if (gp_possum_shootable())
++				{
++					// Solid too: projectile weapons only hit solid actors.
++					ob->flags |= FL_SHOOTABLE | FL_SOLID;
++				}
+ 				ob->temp2 = (5 * 60) + ((US_RndT() % 20) * 60);
+ 				return;
+ 			}
+diff --git a/src/bstone/src/bstone_hw_video.cpp b/src/bstone/src/bstone_hw_video.cpp
+index c61aa0ed..105b0148 100644
+--- a/src/bstone/src/bstone_hw_video.cpp
++++ b/src/bstone/src/bstone_hw_video.cpp
+@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
+ // Hardware accelerated video (HW).
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <unordered_map>
+ #include <unordered_set>
+ 
+@@ -671,6 +672,14 @@ private:
+ 	R3rR2Texture* r3_fade_t2d_{};
+ 	cgm::Mat4D r3_fade_ortho_mat_{};
+ 
++	// Crosshair: four outline quads (black) followed by four fill quads (white).
++	static constexpr int crosshair_quad_count = 8;
++	static constexpr int crosshair_vertex_count = 4 * crosshair_quad_count;
++	static constexpr int crosshair_index_count = 6 * crosshair_quad_count;
++	R3rBufferUPtr crosshair_ib_{};
++	R3rBufferUPtr crosshair_vb_{};
++	R3rVertexInputUPtr crosshair_vi_{};
++
+ 	bool fizzle_fx_is_enabled_{};
+ 	bool fizzle_fx_is_fading_{};
+ 	int fizzle_fx_color_index_{};
+@@ -1059,6 +1068,12 @@ private:
+ 	void update_3d_fade_vb();
+ 	void update_3d_fade_ortho();
+ 
++	void destroy_crosshair() noexcept;
++	void create_crosshair();
++	void update_crosshair_ib();
++	void update_crosshair_vb();
++	void render_crosshair();
++
+ 	void destroy_3d_fade_r2_texture() noexcept;
+ 	void create_r3_fade_r2_texture();
+ 
+@@ -2608,15 +2623,15 @@ try {
+ 
+ void HwVideo::update_player_direction() noexcept
+ {
+-	player_angle_rad_ = math::deg_to_rad(player->angle);
++	player_angle_rad_ = math::deg_to_rad(player_get_view_angle());
+ 	view_direction_ = cgm::Vec2D{std::cos(player_angle_rad_), -std::sin(player_angle_rad_)};
+ 	bs_view_direction_ = view_direction_;
+ }
+ 
+ void HwVideo::update_player_position() noexcept
+ {
+-	player_position_[0] = player->x;
+-	player_position_[1] = player->y;
++	player_position_[0] = player_get_view_x();
++	player_position_[1] = player_get_view_y();
+ }
+ 
+ void HwVideo::update_player_view_position() noexcept
+@@ -4868,6 +4883,161 @@ try {
+ 	}
+ 
+ 	update_vertex_buffer<FadeVertex>(r3_fade_vb_, 0, 4, vertices.data());
++
++	update_crosshair_vb();
++} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
++
++void HwVideo::destroy_crosshair() noexcept
++{
++	destroy_vertex_input(crosshair_vi_);
++	destroy_vertex_buffer(crosshair_vb_);
++	destroy_index_buffer(crosshair_ib_);
++}
++
++void HwVideo::create_crosshair()
++try {
++	crosshair_ib_ = create_index_buffer(R3rBufferUsageType::draw_static, 2, crosshair_index_count);
++	crosshair_vb_ = create_vertex_buffer<FadeVertex>(R3rBufferUsageType::draw_static, crosshair_vertex_count);
++	create_vertex_input<FadeVertex>(crosshair_ib_, crosshair_vb_, crosshair_vi_);
++} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
++
++void HwVideo::update_crosshair_ib()
++try {
++	auto indices = std::array<std::uint16_t, crosshair_index_count>{};
++
++	for (int i = 0; i < crosshair_quad_count; ++i)
++	{
++		const auto base = static_cast<std::uint16_t>(4 * i);
++		const auto offset = 6 * i;
++
++		indices[offset + 0] = base;
++		indices[offset + 1] = static_cast<std::uint16_t>(base + 1);
++		indices[offset + 2] = static_cast<std::uint16_t>(base + 2);
++		indices[offset + 3] = base;
++		indices[offset + 4] = static_cast<std::uint16_t>(base + 2);
++		indices[offset + 5] = static_cast<std::uint16_t>(base + 3);
++	}
++
++	update_index_buffer(crosshair_ib_, 0, crosshair_index_count, indices.data());
++} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
++
++void HwVideo::update_crosshair_vb()
++try {
++	if (crosshair_vb_ == nullptr)
++	{
++		return;
++	}
++
++	// Sized relative to a 1080-line screen: 2px thick, 8px arms, 4px gap, 1px outline.
++	const auto unit = static_cast<double>(vid_layout_.screen_height) / 1080.0;
++	const auto thickness = std::max(1.0, std::round(2.0 * unit));
++	const auto arm = std::max(3.0, std::round(8.0 * unit));
++	const auto gap = std::max(2.0, std::round(4.0 * unit));
++	const auto outline = std::max(1.0, std::round(1.0 * unit));
++
++	// Snap the centre so odd/even thicknesses stay pixel-aligned.
++	const auto half_t = 0.5 * thickness;
++	const auto cx = std::floor(0.5 * vid_layout_.screen_viewport_width - half_t) + half_t;
++	const auto cy = std::floor(0.5 * vid_layout_.screen_viewport_height - half_t) + half_t;
++
++	struct Rect { double x0, y0, x1, y1; };
++
++	const Rect arms[4] =
++	{
++		{cx - gap - arm, cy - half_t, cx - gap, cy + half_t}, // left
++		{cx + gap, cy - half_t, cx + gap + arm, cy + half_t}, // right
++		{cx - half_t, cy - gap - arm, cx + half_t, cy - gap}, // bottom
++		{cx - half_t, cy + gap, cx + half_t, cy + gap + arm}, // top
++	};
++
++	auto vertices = FadeVbi{};
++	vertices.resize(crosshair_vertex_count);
++
++	auto vertex_index = 0;
++
++	const auto add_quad = [&](const Rect& r)
++	{
++		const auto x0 = static_cast<float>(r.x0);
++		const auto y0 = static_cast<float>(r.y0);
++		const auto x1 = static_cast<float>(r.x1);
++		const auto y1 = static_cast<float>(r.y1);
++
++		vertices[vertex_index].xyz = VertexPosition{x0, y0, 0.0F};
++		vertices[vertex_index++].uv = VertexTextureCoordinates{0.0F, 0.0F};
++		vertices[vertex_index].xyz = VertexPosition{x1, y0, 0.0F};
++		vertices[vertex_index++].uv = VertexTextureCoordinates{1.0F, 0.0F};
++		vertices[vertex_index].xyz = VertexPosition{x1, y1, 0.0F};
++		vertices[vertex_index++].uv = VertexTextureCoordinates{1.0F, 1.0F};
++		vertices[vertex_index].xyz = VertexPosition{x0, y1, 0.0F};
++		vertices[vertex_index++].uv = VertexTextureCoordinates{0.0F, 1.0F};
++	};
++
++	for (const auto& r : arms)
++	{
++		add_quad(Rect{r.x0 - outline, r.y0 - outline, r.x1 + outline, r.y1 + outline});
++	}
++
++	for (const auto& r : arms)
++	{
++		add_quad(r);
++	}
++
++	update_vertex_buffer<FadeVertex>(crosshair_vb_, 0, crosshair_vertex_count, vertices.data());
++} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
++
++void HwVideo::render_crosshair()
++try {
++	auto& command_buffer = r3_command_buffer_;
++
++	{
++		auto& command = command_buffer->write_set_mat4_uniform();
++		command.var = model_mat_uniform_;
++		convert(cgm::Mat4D::get_identity(), command.value);
++	}
++
++	{
++		auto& command = command_buffer->write_set_mat4_uniform();
++		command.var = view_mat_uniform_;
++		convert(cgm::Mat4D::get_identity(), command.value);
++	}
++
++	{
++		auto& command = command_buffer->write_set_mat4_uniform();
++		command.var = projection_mat_uniform_;
++		convert(r3_fade_ortho_mat_, command.value);
++	}
++
++	{
++		auto& command = command_buffer->write_set_sampler();
++		command.sampler = fade_sampler_.get();
++	}
++
++	{
++		auto& command = command_buffer->write_set_vertex_input();
++		command.vertex_input = crosshair_vi_.get();
++	}
++
++	const auto draw_half = [&](R3rR2Texture* texture, int first_quad)
++	{
++		{
++			auto& command = command_buffer->write_set_texture();
++			command.r2_texture = texture;
++		}
++
++		{
++			auto& command = command_buffer->write_draw_indexed();
++			auto& param = command.draw_indexed;
++
++			param.primitive_type = R3rPrimitiveType::triangle_list;
++			param.vertex_count = 6 * (crosshair_quad_count / 2);
++			param.index_byte_depth = 2;
++			param.index_buffer_offset = 0;
++			param.index_offset = 6 * first_quad;
++		}
++	};
++
++	draw_half(r2_black_t2d_1x1_, 0);
++	draw_half(r2_white_t2d_1x1_, crosshair_quad_count / 2);
+ } BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
+ 
+ void HwVideo::update_3d_fade_ortho()
+@@ -4913,6 +5083,7 @@ void HwVideo::uninitialize_3d_fade() noexcept
+ 	destroy_3d_fade_vb();
+ 	destroy_3d_fade_ib();
+ 	destroy_3d_fade_r2_texture();
++	destroy_crosshair();
+ }
+ 
+ void HwVideo::destroy_texture_manager() noexcept
+@@ -4931,7 +5102,9 @@ try {
+ 	create_3d_fade_vb();
+ 	create_3d_fade_vi();
+ 	create_r3_fade_r2_texture();
++	create_crosshair();
+ 
++	update_crosshair_ib();
+ 	update_3d_fade_ib();
+ 	update_3d_fade_vb();
+ 	update_3d_fade_ortho();
+@@ -6646,6 +6819,12 @@ try {
+ 			}
+ 		}
+ 
++		// Crosshair.
++		//
++		if (gp_show_crosshair() && playstate != ex_died && playstate != ex_victorious)
++		{
++			render_crosshair();
++		}
+ 
+ 		// 3D fade (bonus, damage, death, etc).
+ 		//

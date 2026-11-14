@@ -1,0 +1,63 @@
+From 45250a8ca1cd9c32a87d303ac17d8c214a665896 Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 15:27:54 +1100
+Subject: [PATCH 16/16] Possum v2: downed Star Troopers stay solid (projectiles
+ hit them) and any hit kills them
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/bstone/src/3d_state.cpp | 27 ++++++++++++++-------------
+ 1 file changed, 14 insertions(+), 13 deletions(-)
+
+diff --git a/src/bstone/src/3d_state.cpp b/src/bstone/src/3d_state.cpp
+index 973b45e8..1cf86b5c 100644
+--- a/src/bstone/src/3d_state.cpp
++++ b/src/bstone/src/3d_state.cpp
+@@ -1423,6 +1423,18 @@ void DamageActor(
+ 		return;
+ 	}
+ 
++	// gp_possum_shootable: any hit on a Star Trooper playing possum finishes it.
++	//
++	if (gp_possum_shootable() &&
++		ob->obclass == swatobj &&
++		(ob->state == &s_swatwounded1 ||
++			ob->state == &s_swatwounded2 ||
++			ob->state == &s_swatwounded3 ||
++			ob->state == &s_swatwounded4))
++	{
++		damage = static_cast<std::uint16_t>(ob->hitpoints > 0 ? ob->hitpoints : 1);
++	}
++
+ 	const auto& assets_info = get_assets_info();
+ 
+ 	switch (ob->obclass)
+@@ -1544,18 +1556,6 @@ void DamageActor(
+ 		switch (ob->obclass)
+ 		{
+ 		case swatobj:
+-			// gp_possum_shootable: a trooper playing possum takes the hit and
+-			// stays down (it dies once its hit points run out).
+-			//
+-			if (gp_possum_shootable() &&
+-				(ob->state == &s_swatwounded1 ||
+-					ob->state == &s_swatwounded2 ||
+-					ob->state == &s_swatwounded3 ||
+-					ob->state == &s_swatwounded4))
+-			{
+-				return;
+-			}
+-
+ 			// Don't get wounded if it's an arc!
+ 			//
+ 			if ((attacker->obclass == arc_barrierobj) ||
+@@ -1585,7 +1585,8 @@ void DamageActor(
+ 
+ 				if (gp_possum_shootable())
+ 				{
+-					ob->flags |= FL_SHOOTABLE;
++					// Solid too: projectile weapons only hit solid actors.
++					ob->flags |= FL_SHOOTABLE | FL_SOLID;
+ 				}
+ 				ob->temp2 = (5 * 60) + ((US_RndT() % 20) * 60);
+ 				return;

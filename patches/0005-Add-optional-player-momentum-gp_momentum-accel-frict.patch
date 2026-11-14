@@ -1,0 +1,442 @@
+From ffdb2a4f4017160f8661bddd704374d79c242f7d Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 23:57:58 +1100
+Subject: [PATCH 05/16] Add optional player momentum (gp_momentum,
+ accel/friction ms cvars, menu switch)
+
+---
+ src/bstone/src/3d_agent.cpp | 176 +++++++++++++++++++++++++++++++++---
+ src/bstone/src/3d_def.h     |   8 ++
+ src/bstone/src/3d_main.cpp  |  60 ++++++++++++
+ src/bstone/src/3d_menu.cpp  |  18 +++-
+ src/bstone/src/3d_play.cpp  |   1 +
+ 5 files changed, 249 insertions(+), 14 deletions(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 072345d0..888c5749 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -415,6 +415,10 @@ void Thrust(
+ 	std::int16_t angle,
+ 	double speed);
+ 
++void ThrustVector(
++	double xmove,
++	double ymove);
++
+ bool TryMove(
+ 	objtype* ob);
+ 
+@@ -509,6 +513,141 @@ double player_get_view_angle() noexcept
+ 	return angle;
+ }
+ 
++// Momentum: the player speeds up and slows down over a short time instead of instantly.
++// Velocity is in tiles per tic. Off during demos so recorded input plays back the same.
++
++extern bool demorecord;
++extern bool demoplayback;
++
++namespace {
++
++bool momentum_is_collecting_ = false;
++double momentum_wish_x_ = 0.0;
++double momentum_wish_y_ = 0.0;
++double momentum_velocity_x_ = 0.0;
++double momentum_velocity_y_ = 0.0;
++
++bool momentum_is_enabled() noexcept
++{
++	return gp_momentum() && !demorecord && !demoplayback;
++}
++
++// Movement requested by ControlMovement; collected while momentum is on.
++void player_thrust(
++	std::int16_t angle,
++	double speed)
++{
++	if (!momentum_is_collecting_)
++	{
++		Thrust(angle, speed);
++		return;
++	}
++
++	momentum_wish_x_ += speed * costable[angle];
++	momentum_wish_y_ -= speed * sintable[angle];
++}
++
++void momentum_begin() noexcept
++{
++	momentum_is_collecting_ = momentum_is_enabled();
++	momentum_wish_x_ = 0.0;
++	momentum_wish_y_ = 0.0;
++
++	if (!momentum_is_collecting_)
++	{
++		momentum_velocity_x_ = 0.0;
++		momentum_velocity_y_ = 0.0;
++	}
++}
++
++void momentum_end()
++{
++	if (!momentum_is_collecting_)
++	{
++		return;
++	}
++
++	momentum_is_collecting_ = false;
++
++	const auto tic_count = std::max(static_cast<int>(tics), 1);
++
++	// Requested speed per tic (the requested movement already scales with tics).
++	const auto wish_x = momentum_wish_x_ / tic_count;
++	const auto wish_y = momentum_wish_y_ / tic_count;
++	const auto has_wish = (wish_x != 0.0 || wish_y != 0.0);
++
++	// Rates are relative to full running speed, so the times are 0 -> full run and full run -> 0.
++	constexpr auto run_speed = 70 * MOVESCALE;
++	const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
++	const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
++
++	auto move_x = 0.0;
++	auto move_y = 0.0;
++
++	for (auto i = 0; i < tic_count; ++i)
++	{
++		const auto delta_x = wish_x - momentum_velocity_x_;
++		const auto delta_y = wish_y - momentum_velocity_y_;
++		const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
++
++		if (delta <= max_step)
++		{
++			momentum_velocity_x_ = wish_x;
++			momentum_velocity_y_ = wish_y;
++		}
++		else
++		{
++			momentum_velocity_x_ += delta_x * (max_step / delta);
++			momentum_velocity_y_ += delta_y * (max_step / delta);
++		}
++
++		move_x += momentum_velocity_x_;
++		move_y += momentum_velocity_y_;
++	}
++
++	auto speed = std::sqrt((move_x * move_x) + (move_y * move_y));
++
++	if (speed == 0.0)
++	{
++		return;
++	}
++
++	thrustspeed += speed;
++
++	constexpr auto max_speed = 2.0 * MINDIST;
++
++	if (speed > max_speed)
++	{
++		move_x *= max_speed / speed;
++		move_y *= max_speed / speed;
++	}
++
++	const auto old_x = player->x;
++	const auto old_y = player->y;
++
++	ThrustVector(move_x, move_y);
++
++	// Don't keep pushing into a wall we were stopped by.
++	if (move_x != 0.0 && player->x == old_x)
++	{
++		momentum_velocity_x_ = 0.0;
++	}
++
++	if (move_y != 0.0 && player->y == old_y)
++	{
++		momentum_velocity_y_ = 0.0;
++	}
++}
++
++} // namespace
++
++void momentum_reset() noexcept
++{
++	momentum_is_collecting_ = false;
++	momentum_velocity_x_ = 0.0;
++	momentum_velocity_y_ = 0.0;
++}
++
+ /*
+ =======================
+ =
+@@ -538,6 +677,7 @@ void ControlMovement(
+ 	;
+ 
+ 	thrustspeed = 0.0;
++	momentum_begin();
+ 
+ 	//
+ 	// side to side move
+@@ -570,7 +710,7 @@ void ControlMovement(
+ 		const auto sign = (strafe_value > 0 ? 1 : -1);
+ 		const auto angle = clamp_angle(ob->angle + (sign * (ANGLES / 4)));
+ 
+-		Thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE);
++		player_thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE);
+ 	}
+ #endif
+ 
+@@ -636,7 +776,7 @@ void ControlMovement(
+ 		const auto angle = clamp_angle(ob->angle + angle_delta);
+ 		const auto value = std::abs(y);
+ 
+-		Thrust(static_cast<std::int16_t>(angle), value);
++		player_thrust(static_cast<std::int16_t>(angle), value);
+ 	}
+ 	else
+ 	{
+@@ -645,13 +785,13 @@ void ControlMovement(
+ 		//
+ 		if (controly < 0)
+ 		{
+-			Thrust(ob->angle, -controly * MOVESCALE); // move forwards
++			player_thrust(ob->angle, -controly * MOVESCALE); // move forwards
+ 		}
+ 		else if (controly > 0)
+ 		{
+ 			const auto angle = clamp_angle(ob->angle + ANGLES / 2);
+ 
+-			Thrust(static_cast<std::int16_t>(angle), controly * BACKMOVESCALE); // move backwards
++			player_thrust(static_cast<std::int16_t>(angle), controly * BACKMOVESCALE); // move backwards
+ 		}
+ 		else if (bounceOk != 0)
+ 		{
+@@ -659,6 +799,8 @@ void ControlMovement(
+ 		}
+ 	}
+ 
++	momentum_end();
++
+ 	if (controly != 0)
+ 	{
+ 		bounceOk = 8;
+@@ -2844,15 +2986,6 @@ void Thrust(
+ {
+ 	constexpr auto max_speed = 2.0 * MINDIST;
+ 
+-	extern TravelTable travel_table_;
+-
+-	std::uint16_t offset;
+-	std::uint16_t* map[2]{};
+-	std::int16_t dx;
+-	std::int16_t dy;
+-	std::int16_t dangle;
+-	bool ignore_map1;
+-
+ 	thrustspeed += speed;
+ 
+ 	//
+@@ -2866,6 +2999,23 @@ void Thrust(
+ 	const auto xmove = speed * costable[angle];
+ 	const auto ymove = -speed * sintable[angle];
+ 
++	ThrustVector(xmove, ymove);
++}
++
++// Moves the player by a vector (already bounded) and handles the tile it lands on.
++void ThrustVector(
++	double xmove,
++	double ymove)
++{
++	extern TravelTable travel_table_;
++
++	std::uint16_t offset;
++	std::uint16_t* map[2]{};
++	std::int16_t dx;
++	std::int16_t dy;
++	std::int16_t dangle;
++	bool ignore_map1;
++
+ 	ClipMove(player, xmove, ymove);
+ 
+ 	player_oldtilex = player->tilex;
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index 7854f105..230bba00 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -4002,6 +4002,14 @@ void gp_smooth_motion(bool is_enabled);
+ 
+ bool dbg_frame_timing() noexcept;
+ 
++bool gp_momentum() noexcept;
++void gp_momentum(bool is_enabled);
++int gp_momentum_accel_ms() noexcept;
++int gp_momentum_friction_ms() noexcept;
++
++// Clears the player's momentum (level start).
++void momentum_reset() noexcept;
++
+ bool am_rotatable() noexcept;
+ void am_rotatable(bool is_enable);
+ 
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index d876e017..1abbeb13 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11105,6 +11105,43 @@ auto dbg_frame_timing_cvar = bstone::CVar{
+ 	bstone::CVarFlags::archive,
+ 	dbg_frame_timing_default};
+ 
++// gp_momentum
++
++constexpr auto gp_momentum_cvar_name = bstone::StringView{"gp_momentum"};
++constexpr auto gp_momentum_default = true;
++
++auto gp_momentum_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_momentum_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_momentum_default};
++
++// gp_momentum_accel_ms (time from standing to full run speed)
++
++constexpr auto gp_momentum_accel_ms_cvar_name = bstone::StringView{"gp_momentum_accel_ms"};
++constexpr auto gp_momentum_accel_ms_default = 120;
++
++auto gp_momentum_accel_ms_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_momentum_accel_ms_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_momentum_accel_ms_default,
++	0,
++	2000};
++
++// gp_momentum_friction_ms (time from full run speed to standing)
++
++constexpr auto gp_momentum_friction_ms_cvar_name = bstone::StringView{"gp_momentum_friction_ms"};
++constexpr auto gp_momentum_friction_ms_default = 150;
++
++auto gp_momentum_friction_ms_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_momentum_friction_ms_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_momentum_friction_ms_default,
++	0,
++	2000};
++
+ } // namespace
+ 
+ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+@@ -11126,6 +11163,9 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_show_crosshair_cvar);
+ 	cvar_mgr.add(gp_smooth_motion_cvar);
+ 	cvar_mgr.add(dbg_frame_timing_cvar);
++	cvar_mgr.add(gp_momentum_cvar);
++	cvar_mgr.add(gp_momentum_accel_ms_cvar);
++	cvar_mgr.add(gp_momentum_friction_ms_cvar);
+ }
+ 
+ namespace {
+@@ -11312,6 +11352,26 @@ bool dbg_frame_timing() noexcept
+ 	return dbg_frame_timing_cvar.get_bool();
+ }
+ 
++bool gp_momentum() noexcept
++{
++	return gp_momentum_cvar.get_bool();
++}
++
++void gp_momentum(bool is_enabled)
++{
++	gp_momentum_cvar.set_bool(is_enabled);
++}
++
++int gp_momentum_accel_ms() noexcept
++{
++	return gp_momentum_accel_ms_cvar.get_int32();
++}
++
++int gp_momentum_friction_ms() noexcept
++{
++	return gp_momentum_friction_ms_cvar.get_int32();
++}
++
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();
+diff --git a/src/bstone/src/3d_menu.cpp b/src/bstone/src/3d_menu.cpp
+index 4a2e1740..e2578705 100644
+--- a/src/bstone/src/3d_menu.cpp
++++ b/src/bstone/src/3d_menu.cpp
+@@ -121,6 +121,7 @@ enum sw2_labels
+ 	SW2_PS_MAP_IN_STATS,
+ 	SW2_SHOW_CROSSHAIR,
+ 	SW2_SMOOTH_MOTION,
++	SW2_MOMENTUM,
+ }; // sw2_labels
+ 
+ enum MenuVideoLables
+@@ -422,7 +423,7 @@ CP_iteminfo SwitchItems = {MENU_X, 0, 0, 0, 0, 9, {87, -1, 132, 7, 1}};
+ CP_iteminfo video_items = {MENU_X, MENU_Y + 30, 5, 0, 0, 9, {77, -1, 154, 7, 1}};
+ CP_iteminfo video_mode_items = {MENU_X - 31, MENU_Y + 10, 8, 0, 0, 9, {67, -1, 184, 7, 1}};
+ CP_iteminfo texturing_items = {MENU_X, MENU_Y + 10, 7, 0, 0, 9, {77, -1, 154, 7, 1}};
+-CP_iteminfo switches2_items = {MENU_X, MENU_Y + 30, 7, 0, 0, 9, {87, -1, 132, 7, 1}};
++CP_iteminfo switches2_items = {MENU_X, MENU_Y + 21, 8, 0, 0, 9, {87, -1, 132, 7, 1}};
+ // BBi
+ 
+ 
+@@ -499,6 +500,7 @@ CP_itemtype switch2_menu[] =
+ 	{AT_ENABLED, "[PS] MAP IN STATS", 0},
+ 	{AT_ENABLED, "SHOW CROSSHAIR", 0},
+ 	{AT_ENABLED, "SMOOTH MOTION", 0},
++	{AT_ENABLED, "MOMENTUM", 0},
+ };
+ 
+ CP_itemtype NewEmenu[] = {
+@@ -6106,6 +6108,7 @@ void draw_switch2_description(
+ 		"TOGGLES MAP IN STATS (PLANET STRIKE)",
+ 		"TOGGLES AIMING CROSSHAIR",
+ 		"TOGGLES DRAWING BETWEEN GAME TICS",
++		"TOGGLES MOVEMENT ACCELERATION",
+ 	};
+ 
+ 	const auto& assets_info = get_assets_info();
+@@ -6203,6 +6206,13 @@ void draw_all_switch2_lights(
+ 					shape += 1;
+ 				}
+ 				break;
++
++			case SW2_MOMENTUM:
++				if (gp_momentum())
++				{
++					shape += 1;
++				}
++				break;
+ 			}
+ 
+ 			VWB_DrawPic(switches2_items.x - 16, switches2_items.y + (i * switches2_items.y_spacing) - 1, shape);
+@@ -6285,6 +6295,12 @@ void cp_switches2(
+ 			ShootSnd();
+ 			draw_switch2_menu();
+ 			break;
++
++		case SW2_MOMENTUM:
++			gp_momentum(!gp_momentum());
++			ShootSnd();
++			draw_switch2_menu();
++			break;
+ 		}
+ 	} while (which >= 0);
+ 
+diff --git a/src/bstone/src/3d_play.cpp b/src/bstone/src/3d_play.cpp
+index 1f93d683..40516000 100644
+--- a/src/bstone/src/3d_play.cpp
++++ b/src/bstone/src/3d_play.cpp
+@@ -2069,6 +2069,7 @@ void PlayLoop()
+ 
+ 	smooth_motion_reset(gp_smooth_motion() && !demoplayback);
+ 	frame_timing_reset();
++	momentum_reset();
+ 
+ 	do
+ 	{

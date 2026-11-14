@@ -1,0 +1,95 @@
+From c37f3a9f13b846f53d18bcad73935590132c458e Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 10:07:03 +1100
+Subject: [PATCH 13/16] Duke style: gp_duke_slide (default off) - instant
+ start/stop at Duke top speed
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/bstone/src/3d_agent.cpp | 15 +++++++++++++--
+ src/bstone/src/3d_def.h     |  1 +
+ src/bstone/src/3d_main.cpp  | 17 +++++++++++++++++
+ 3 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 6b9a5a76..922bd41b 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -621,10 +621,21 @@ void duke_step(
+ 	const auto stop_speed = run_speed * (2048.0 / 2571008.0);
+ 	const auto has_wish = (duke_wish_x_ != 0.0 || duke_wish_y_ != 0.0);
+ 
++	const auto is_instant = !gp_duke_slide();
++
+ 	for (auto i = 0; i < tic_count; ++i)
+ 	{
+-		momentum_velocity_x_ = (momentum_velocity_x_ + (duke_wish_x_ * thrust)) * friction;
+-		momentum_velocity_y_ = (momentum_velocity_y_ + (duke_wish_y_ * thrust)) * friction;
++		if (is_instant)
++		{
++			// No acceleration or slide: straight to Duke's top speed, stop dead on release.
++			momentum_velocity_x_ = duke_wish_x_ * run_speed;
++			momentum_velocity_y_ = duke_wish_y_ * run_speed;
++		}
++		else
++		{
++			momentum_velocity_x_ = (momentum_velocity_x_ + (duke_wish_x_ * thrust)) * friction;
++			momentum_velocity_y_ = (momentum_velocity_y_ + (duke_wish_y_ * thrust)) * friction;
++		}
+ 
+ 		if (!has_wish && std::abs(momentum_velocity_x_) < stop_speed && std::abs(momentum_velocity_y_) < stop_speed)
+ 		{
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index eb19d278..ab2b0800 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -4016,6 +4016,7 @@ int gp_momentum_style() noexcept;
+ void gp_momentum_style(int style);
+ int gp_duke_speed_pct() noexcept;
+ int gp_duke_strafe_pct() noexcept;
++bool gp_duke_slide() noexcept;
+ 
+ // Clears the player's momentum (level start).
+ void momentum_reset() noexcept;
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index 68813f5f..e11ba3e6 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11177,6 +11177,17 @@ constexpr auto gp_duke_speed_pct_cvar_name = bstone::StringView{"gp_duke_speed_p
+ // gp_duke_strafe_pct (Duke style sideways top speed, same scale)
+ 
+ constexpr auto gp_duke_strafe_pct_cvar_name = bstone::StringView{"gp_duke_strafe_pct"};
++
++// gp_duke_slide (Duke style acceleration/stopping slide; off = instant start and stop)
++
++constexpr auto gp_duke_slide_cvar_name = bstone::StringView{"gp_duke_slide"};
++constexpr auto gp_duke_slide_default = false;
++
++auto gp_duke_slide_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_duke_slide_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_duke_slide_default};
+ constexpr auto gp_duke_strafe_pct_default = 100;
+ 
+ auto gp_duke_strafe_pct_cvar = bstone::CVar{
+@@ -11234,6 +11245,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_momentum_style_cvar);
+ 	cvar_mgr.add(gp_duke_speed_pct_cvar);
+ 	cvar_mgr.add(gp_duke_strafe_pct_cvar);
++	cvar_mgr.add(gp_duke_slide_cvar);
+ }
+ 
+ namespace {
+@@ -11475,6 +11487,11 @@ int gp_duke_strafe_pct() noexcept
+ 	return gp_duke_strafe_pct_cvar.get_int32();
+ }
+ 
++bool gp_duke_slide() noexcept
++{
++	return gp_duke_slide_cvar.get_bool();
++}
++
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();

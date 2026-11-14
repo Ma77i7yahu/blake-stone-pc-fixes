@@ -1,0 +1,460 @@
+From a245f659b35bcc446bc601cb07cba79c56711dc2 Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 01:01:02 +1100
+Subject: [PATCH 01/16] Add optional aiming crosshair (gp_show_crosshair, Game
+ Switches 2 menu)
+
+---
+ src/bstone/CMakeLists.txt          |   1 -
+ src/bstone/src/3d_def.h            |   3 +
+ src/bstone/src/3d_draw.cpp         |  57 +++++++++
+ src/bstone/src/3d_main.cpp         |  22 ++++
+ src/bstone/src/3d_menu.cpp         |  18 ++-
+ src/bstone/src/bstone_hw_video.cpp | 179 +++++++++++++++++++++++++++++
+ 6 files changed, 278 insertions(+), 2 deletions(-)
+
+diff --git a/src/bstone/CMakeLists.txt b/src/bstone/CMakeLists.txt
+index 93ed7c94..614d8678 100644
+--- a/src/bstone/CMakeLists.txt
++++ b/src/bstone/CMakeLists.txt
+@@ -1045,7 +1045,6 @@ source_group("bstone" FILES ${BSTONE_BSTONE_SOURCES})
+ if (WIN32)
+ 	set(BSTONE_RESOURCES_WIN32_SOURCES
+ 		src/resources/win32/bstone_win32_rc.h
+-		$<$<CXX_COMPILER_ID:MSVC>:src/resources/win32/bstone_win32_msvc.manifest>
+ 		"${PROJECT_BINARY_DIR}/src/resources/win32/bstone_win32.rc"
+ 	)
+ 
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index a757c3be..ab2a8473 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -3972,6 +3972,9 @@ void gp_vanilla_fizzle_fx(bool is_enabled);
+ bool gp_ps_map_in_stats() noexcept;
+ void gp_ps_map_in_stats(bool is_enabled);
+ 
++bool gp_show_crosshair() noexcept;
++void gp_show_crosshair(bool is_enabled);
++
+ bool am_rotatable() noexcept;
+ void am_rotatable(bool is_enable);
+ 
+diff --git a/src/bstone/src/3d_draw.cpp b/src/bstone/src/3d_draw.cpp
+index 91d946c3..a842c7a6 100644
+--- a/src/bstone/src/3d_draw.cpp
++++ b/src/bstone/src/3d_draw.cpp
+@@ -1469,6 +1469,62 @@ void DrawPlayerWeapon()
+ 	}
+ }
+ 
++// Software-renderer crosshair (the hardware renderer draws its own).
++void DrawCrosshair()
++{
++	if (vid_is_hw() || !gp_show_crosshair())
++	{
++		return;
++	}
++
++	if (playstate == ex_died || playstate == ex_victorious)
++	{
++		return;
++	}
++
++	const auto unit = std::max(1, vga_height / 400);
++	const auto thickness = unit;
++	const auto arm = 4 * unit;
++	const auto gap = 2 * unit;
++
++	const auto cx = viewwidth / 2;
++	const auto cy = vga_3d_view_top_y + (viewheight / 2);
++
++	const auto fill = [](int x1, int y1, int x2, int y2, std::uint8_t color)
++	{
++		x1 = std::max(x1, 0);
++		x2 = std::min(x2, viewwidth);
++		y1 = std::max(y1, vga_3d_view_top_y);
++		y2 = std::min(y2, vga_3d_view_bottom_y);
++
++		for (int y = y1; y < y2; ++y)
++		{
++			for (int x = x1; x < x2; ++x)
++			{
++				vga_memory[vl_get_offset(0, x, y)] = color;
++			}
++		}
++	};
++
++	const int arms[4][4] =
++	{
++		{cx - gap - arm, cy, cx - gap, cy + thickness},
++		{cx + thickness + gap, cy, cx + thickness + gap + arm, cy + thickness},
++		{cx, cy - gap - arm, cx + thickness, cy - gap},
++		{cx, cy + thickness + gap, cx + thickness, cy + thickness + gap + arm},
++	};
++
++	for (const auto& a : arms)
++	{
++		fill(a[0] - unit, a[1] - unit, a[2] + unit, a[3] + unit, BLACK);
++	}
++
++	for (const auto& a : arms)
++	{
++		fill(a[0], a[1], a[2], a[3], WHITE);
++	}
++}
++
+ void CalcTics()
+ {
+ 	constexpr long long one_second_ns = 1'000'000'000;
+@@ -1651,6 +1707,7 @@ void ThreeDRefresh()
+ 	vid_is_3d = false;
+ 
+ 	DrawPlayerWeapon(); // draw player's hands
++	DrawCrosshair();
+ 
+ //
+ // show screen and time last cycle
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index fb2442a9..7d843288 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11072,6 +11072,17 @@ auto gp_ps_map_in_stats_cvar = bstone::CVar{
+ 	bstone::CVarFlags::archive,
+ 	gp_ps_map_in_stats_default};
+ 
++// gp_show_crosshair
++
++constexpr auto gp_show_crosshair_cvar_name = bstone::StringView{"gp_show_crosshair"};
++constexpr auto gp_show_crosshair_default = true;
++
++auto gp_show_crosshair_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_show_crosshair_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_show_crosshair_default};
++
+ } // namespace
+ 
+ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+@@ -11090,6 +11101,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_no_weapon_bobbing_cvar);
+ 	cvar_mgr.add(gp_vanilla_fizzle_fx_cvar);
+ 	cvar_mgr.add(gp_ps_map_in_stats_cvar);
++	cvar_mgr.add(gp_show_crosshair_cvar);
+ }
+ 
+ namespace {
+@@ -11252,6 +11264,16 @@ void gp_ps_map_in_stats(bool is_enabled)
+ 	gp_ps_map_in_stats_cvar.set_bool(is_enabled);
+ }
+ 
++bool gp_show_crosshair() noexcept
++{
++	return gp_show_crosshair_cvar.get_bool();
++}
++
++void gp_show_crosshair(bool is_enabled)
++{
++	gp_show_crosshair_cvar.set_bool(is_enabled);
++}
++
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();
+diff --git a/src/bstone/src/3d_menu.cpp b/src/bstone/src/3d_menu.cpp
+index 1bdf15b5..d18b6213 100644
+--- a/src/bstone/src/3d_menu.cpp
++++ b/src/bstone/src/3d_menu.cpp
+@@ -119,6 +119,7 @@ enum sw2_labels
+ 	SW2_NO_WEAPON_BOBBING,
+ 	SW2_VANILLA_FIZZLE_FX,
+ 	SW2_PS_MAP_IN_STATS,
++	SW2_SHOW_CROSSHAIR,
+ }; // sw2_labels
+ 
+ enum MenuVideoLables
+@@ -420,7 +421,7 @@ CP_iteminfo SwitchItems = {MENU_X, 0, 0, 0, 0, 9, {87, -1, 132, 7, 1}};
+ CP_iteminfo video_items = {MENU_X, MENU_Y + 30, 5, 0, 0, 9, {77, -1, 154, 7, 1}};
+ CP_iteminfo video_mode_items = {MENU_X - 31, MENU_Y + 10, 8, 0, 0, 9, {67, -1, 184, 7, 1}};
+ CP_iteminfo texturing_items = {MENU_X, MENU_Y + 10, 7, 0, 0, 9, {77, -1, 154, 7, 1}};
+-CP_iteminfo switches2_items = {MENU_X, MENU_Y + 30, 5, 0, 0, 9, {87, -1, 132, 7, 1}};
++CP_iteminfo switches2_items = {MENU_X, MENU_Y + 30, 6, 0, 0, 9, {87, -1, 132, 7, 1}};
+ // BBi
+ 
+ 
+@@ -495,6 +496,7 @@ CP_itemtype switch2_menu[] =
+ 	{AT_ENABLED, "NO WEAPON BOBBING", 0},
+ 	{AT_ENABLED, "VANILLA FIZZLE FX", 0},
+ 	{AT_ENABLED, "[PS] MAP IN STATS", 0},
++	{AT_ENABLED, "SHOW CROSSHAIR", 0},
+ };
+ 
+ CP_itemtype NewEmenu[] = {
+@@ -6100,6 +6102,7 @@ void draw_switch2_description(
+ 		"TOGGLES WEAPON BOBBING",
+ 		"TOGGLES VANILLA FIZZLE FX",
+ 		"TOGGLES MAP IN STATS (PLANET STRIKE)",
++		"TOGGLES AIMING CROSSHAIR",
+ 	};
+ 
+ 	const auto& assets_info = get_assets_info();
+@@ -6183,6 +6186,13 @@ void draw_all_switch2_lights(
+ 					shape += 1;
+ 				}
+ 				break;
++
++			case SW2_SHOW_CROSSHAIR:
++				if (gp_show_crosshair())
++				{
++					shape += 1;
++				}
++				break;
+ 			}
+ 
+ 			VWB_DrawPic(switches2_items.x - 16, switches2_items.y + (i * switches2_items.y_spacing) - 1, shape);
+@@ -6253,6 +6263,12 @@ void cp_switches2(
+ 			ShootSnd();
+ 			draw_switch2_menu();
+ 			break;
++
++		case SW2_SHOW_CROSSHAIR:
++			gp_show_crosshair(!gp_show_crosshair());
++			ShootSnd();
++			draw_switch2_menu();
++			break;
+ 		}
+ 	} while (which >= 0);
+ 
+diff --git a/src/bstone/src/bstone_hw_video.cpp b/src/bstone/src/bstone_hw_video.cpp
+index c61aa0ed..64072626 100644
+--- a/src/bstone/src/bstone_hw_video.cpp
++++ b/src/bstone/src/bstone_hw_video.cpp
+@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
+ // Hardware accelerated video (HW).
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <unordered_map>
+ #include <unordered_set>
+ 
+@@ -671,6 +672,14 @@ private:
+ 	R3rR2Texture* r3_fade_t2d_{};
+ 	cgm::Mat4D r3_fade_ortho_mat_{};
+ 
++	// Crosshair: four outline quads (black) followed by four fill quads (white).
++	static constexpr int crosshair_quad_count = 8;
++	static constexpr int crosshair_vertex_count = 4 * crosshair_quad_count;
++	static constexpr int crosshair_index_count = 6 * crosshair_quad_count;
++	R3rBufferUPtr crosshair_ib_{};
++	R3rBufferUPtr crosshair_vb_{};
++	R3rVertexInputUPtr crosshair_vi_{};
++
+ 	bool fizzle_fx_is_enabled_{};
+ 	bool fizzle_fx_is_fading_{};
+ 	int fizzle_fx_color_index_{};
+@@ -1059,6 +1068,12 @@ private:
+ 	void update_3d_fade_vb();
+ 	void update_3d_fade_ortho();
+ 
++	void destroy_crosshair() noexcept;
++	void create_crosshair();
++	void update_crosshair_ib();
++	void update_crosshair_vb();
++	void render_crosshair();
++
+ 	void destroy_3d_fade_r2_texture() noexcept;
+ 	void create_r3_fade_r2_texture();
+ 
+@@ -4868,6 +4883,161 @@ try {
+ 	}
+ 
+ 	update_vertex_buffer<FadeVertex>(r3_fade_vb_, 0, 4, vertices.data());
++
++	update_crosshair_vb();
++} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
++
++void HwVideo::destroy_crosshair() noexcept
++{
++	destroy_vertex_input(crosshair_vi_);
++	destroy_vertex_buffer(crosshair_vb_);
++	destroy_index_buffer(crosshair_ib_);
++}
++
++void HwVideo::create_crosshair()
++try {
++	crosshair_ib_ = create_index_buffer(R3rBufferUsageType::draw_static, 2, crosshair_index_count);
++	crosshair_vb_ = create_vertex_buffer<FadeVertex>(R3rBufferUsageType::draw_static, crosshair_vertex_count);
++	create_vertex_input<FadeVertex>(crosshair_ib_, crosshair_vb_, crosshair_vi_);
++} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
++
++void HwVideo::update_crosshair_ib()
++try {
++	auto indices = std::array<std::uint16_t, crosshair_index_count>{};
++
++	for (int i = 0; i < crosshair_quad_count; ++i)
++	{
++		const auto base = static_cast<std::uint16_t>(4 * i);
++		const auto offset = 6 * i;
++
++		indices[offset + 0] = base;
++		indices[offset + 1] = static_cast<std::uint16_t>(base + 1);
++		indices[offset + 2] = static_cast<std::uint16_t>(base + 2);
++		indices[offset + 3] = base;
++		indices[offset + 4] = static_cast<std::uint16_t>(base + 2);
++		indices[offset + 5] = static_cast<std::uint16_t>(base + 3);
++	}
++
++	update_index_buffer(crosshair_ib_, 0, crosshair_index_count, indices.data());
++} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
++
++void HwVideo::update_crosshair_vb()
++try {
++	if (crosshair_vb_ == nullptr)
++	{
++		return;
++	}
++
++	// Sized relative to a 1080-line screen: 2px thick, 8px arms, 4px gap, 1px outline.
++	const auto unit = static_cast<double>(vid_layout_.screen_height) / 1080.0;
++	const auto thickness = std::max(1.0, std::round(2.0 * unit));
++	const auto arm = std::max(3.0, std::round(8.0 * unit));
++	const auto gap = std::max(2.0, std::round(4.0 * unit));
++	const auto outline = std::max(1.0, std::round(1.0 * unit));
++
++	// Snap the centre so odd/even thicknesses stay pixel-aligned.
++	const auto half_t = 0.5 * thickness;
++	const auto cx = std::floor(0.5 * vid_layout_.screen_viewport_width - half_t) + half_t;
++	const auto cy = std::floor(0.5 * vid_layout_.screen_viewport_height - half_t) + half_t;
++
++	struct Rect { double x0, y0, x1, y1; };
++
++	const Rect arms[4] =
++	{
++		{cx - gap - arm, cy - half_t, cx - gap, cy + half_t}, // left
++		{cx + gap, cy - half_t, cx + gap + arm, cy + half_t}, // right
++		{cx - half_t, cy - gap - arm, cx + half_t, cy - gap}, // bottom
++		{cx - half_t, cy + gap, cx + half_t, cy + gap + arm}, // top
++	};
++
++	auto vertices = FadeVbi{};
++	vertices.resize(crosshair_vertex_count);
++
++	auto vertex_index = 0;
++
++	const auto add_quad = [&](const Rect& r)
++	{
++		const auto x0 = static_cast<float>(r.x0);
++		const auto y0 = static_cast<float>(r.y0);
++		const auto x1 = static_cast<float>(r.x1);
++		const auto y1 = static_cast<float>(r.y1);
++
++		vertices[vertex_index].xyz = VertexPosition{x0, y0, 0.0F};
++		vertices[vertex_index++].uv = VertexTextureCoordinates{0.0F, 0.0F};
++		vertices[vertex_index].xyz = VertexPosition{x1, y0, 0.0F};
++		vertices[vertex_index++].uv = VertexTextureCoordinates{1.0F, 0.0F};
++		vertices[vertex_index].xyz = VertexPosition{x1, y1, 0.0F};
++		vertices[vertex_index++].uv = VertexTextureCoordinates{1.0F, 1.0F};
++		vertices[vertex_index].xyz = VertexPosition{x0, y1, 0.0F};
++		vertices[vertex_index++].uv = VertexTextureCoordinates{0.0F, 1.0F};
++	};
++
++	for (const auto& r : arms)
++	{
++		add_quad(Rect{r.x0 - outline, r.y0 - outline, r.x1 + outline, r.y1 + outline});
++	}
++
++	for (const auto& r : arms)
++	{
++		add_quad(r);
++	}
++
++	update_vertex_buffer<FadeVertex>(crosshair_vb_, 0, crosshair_vertex_count, vertices.data());
++} BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
++
++void HwVideo::render_crosshair()
++try {
++	auto& command_buffer = r3_command_buffer_;
++
++	{
++		auto& command = command_buffer->write_set_mat4_uniform();
++		command.var = model_mat_uniform_;
++		convert(cgm::Mat4D::get_identity(), command.value);
++	}
++
++	{
++		auto& command = command_buffer->write_set_mat4_uniform();
++		command.var = view_mat_uniform_;
++		convert(cgm::Mat4D::get_identity(), command.value);
++	}
++
++	{
++		auto& command = command_buffer->write_set_mat4_uniform();
++		command.var = projection_mat_uniform_;
++		convert(r3_fade_ortho_mat_, command.value);
++	}
++
++	{
++		auto& command = command_buffer->write_set_sampler();
++		command.sampler = fade_sampler_.get();
++	}
++
++	{
++		auto& command = command_buffer->write_set_vertex_input();
++		command.vertex_input = crosshair_vi_.get();
++	}
++
++	const auto draw_half = [&](R3rR2Texture* texture, int first_quad)
++	{
++		{
++			auto& command = command_buffer->write_set_texture();
++			command.r2_texture = texture;
++		}
++
++		{
++			auto& command = command_buffer->write_draw_indexed();
++			auto& param = command.draw_indexed;
++
++			param.primitive_type = R3rPrimitiveType::triangle_list;
++			param.vertex_count = 6 * (crosshair_quad_count / 2);
++			param.index_byte_depth = 2;
++			param.index_buffer_offset = 0;
++			param.index_offset = 6 * first_quad;
++		}
++	};
++
++	draw_half(r2_black_t2d_1x1_, 0);
++	draw_half(r2_white_t2d_1x1_, crosshair_quad_count / 2);
+ } BSTONE_END_FUNC_CATCH_ALL_THROW_NESTED
+ 
+ void HwVideo::update_3d_fade_ortho()
+@@ -4913,6 +5083,7 @@ void HwVideo::uninitialize_3d_fade() noexcept
+ 	destroy_3d_fade_vb();
+ 	destroy_3d_fade_ib();
+ 	destroy_3d_fade_r2_texture();
++	destroy_crosshair();
+ }
+ 
+ void HwVideo::destroy_texture_manager() noexcept
+@@ -4931,7 +5102,9 @@ try {
+ 	create_3d_fade_vb();
+ 	create_3d_fade_vi();
+ 	create_r3_fade_r2_texture();
++	create_crosshair();
+ 
++	update_crosshair_ib();
+ 	update_3d_fade_ib();
+ 	update_3d_fade_vb();
+ 	update_3d_fade_ortho();
+@@ -6646,6 +6819,12 @@ try {
+ 			}
+ 		}
+ 
++		// Crosshair.
++		//
++		if (gp_show_crosshair() && playstate != ex_died && playstate != ex_victorious)
++		{
++			render_crosshair();
++		}
+ 
+ 		// 3D fade (bonus, damage, death, etc).
+ 		//

@@ -1,0 +1,99 @@
+From 03b69c9360c25380a31a7d8838fcbf01a46cf283 Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 09:21:37 +1100
+Subject: [PATCH 12/16] Duke style: separate forward (gp_duke_speed_pct 200)
+ and strafe (gp_duke_strafe_pct 100) speeds
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/bstone/src/3d_agent.cpp |  6 +++++-
+ src/bstone/src/3d_def.h     |  1 +
+ src/bstone/src/3d_main.cpp  | 23 +++++++++++++++++++++--
+ 3 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 9d29553a..6b9a5a76 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -595,6 +595,10 @@ void duke_set_wish(
+ 	forward = std::max(-duke_max_input, std::min(forward, duke_max_input));
+ 	right = std::max(-duke_max_input, std::min(right, duke_max_input));
+ 
++	// Separate forward/back and sideways top speeds (Duke itself uses the same for both).
++	forward *= gp_duke_speed_pct() / 100.0;
++	right *= gp_duke_strafe_pct() / 100.0;
++
+ 	const auto c = costable[ob->angle];
+ 	const auto s = sintable[ob->angle];
+ 
+@@ -610,7 +614,7 @@ void duke_step(
+ {
+ 	// Same response at 70 Hz: friction^(30/70) per tic, thrust chosen for the same top speed.
+ 	static const auto friction = std::pow(duke_friction_30hz, 30.0 / TickBase);
+-	const auto run_speed = (duke_run_tiles_per_second / TickBase) * (gp_duke_speed_pct() / 100.0);
++	const auto run_speed = duke_run_tiles_per_second / TickBase;
+ 	const auto thrust = run_speed * (1.0 - friction) / friction;
+ 
+ 	// Duke zeroes velocity below 2048 of ~2.57M (running) per axis.
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index d393a867..eb19d278 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -4015,6 +4015,7 @@ constexpr auto momentum_style_duke = 1;
+ int gp_momentum_style() noexcept;
+ void gp_momentum_style(int style);
+ int gp_duke_speed_pct() noexcept;
++int gp_duke_strafe_pct() noexcept;
+ 
+ // Clears the player's momentum (level start).
+ void momentum_reset() noexcept;
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index 32e07458..68813f5f 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11170,10 +11170,23 @@ auto gp_momentum_style_cvar = bstone::CVar{
+ 	momentum_style_simple,
+ 	momentum_style_duke};
+ 
+-// gp_duke_speed_pct (Duke style top speed in percent of Duke's speed scaled to Blake Stone)
++// gp_duke_speed_pct (Duke style forward/back top speed in percent of Duke's speed scaled to Blake Stone)
+ 
+ constexpr auto gp_duke_speed_pct_cvar_name = bstone::StringView{"gp_duke_speed_pct"};
+-constexpr auto gp_duke_speed_pct_default = 100;
++
++// gp_duke_strafe_pct (Duke style sideways top speed, same scale)
++
++constexpr auto gp_duke_strafe_pct_cvar_name = bstone::StringView{"gp_duke_strafe_pct"};
++constexpr auto gp_duke_strafe_pct_default = 100;
++
++auto gp_duke_strafe_pct_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_duke_strafe_pct_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_duke_strafe_pct_default,
++	25,
++	400};
++constexpr auto gp_duke_speed_pct_default = 200;
+ 
+ auto gp_duke_speed_pct_cvar = bstone::CVar{
+ 	bstone::CVarInt32Tag{},
+@@ -11220,6 +11233,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_strafe_speed_pct_cvar);
+ 	cvar_mgr.add(gp_momentum_style_cvar);
+ 	cvar_mgr.add(gp_duke_speed_pct_cvar);
++	cvar_mgr.add(gp_duke_strafe_pct_cvar);
+ }
+ 
+ namespace {
+@@ -11456,6 +11470,11 @@ int gp_duke_speed_pct() noexcept
+ 	return gp_duke_speed_pct_cvar.get_int32();
+ }
+ 
++int gp_duke_strafe_pct() noexcept
++{
++	return gp_duke_strafe_pct_cvar.get_int32();
++}
++
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();

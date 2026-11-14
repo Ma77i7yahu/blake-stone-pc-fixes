@@ -1,0 +1,259 @@
+From 4c8faf1c77ac770e75a017e46c55397c7229421e Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 08:53:00 +1100
+Subject: [PATCH 11/16] Add Duke Nukem 3D momentum style (default): Duke
+ friction/thrust, full strafe, gp_duke_speed_pct
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/bstone/src/3d_agent.cpp | 82 +++++++++++++++++++++++++++++++++++++
+ src/bstone/src/3d_def.h     |  6 +++
+ src/bstone/src/3d_main.cpp  | 45 +++++++++++++++++++-
+ src/bstone/src/3d_menu.cpp  | 27 ++++++++++--
+ 4 files changed, 156 insertions(+), 4 deletions(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 3fa40712..9d29553a 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -571,6 +571,71 @@ void momentum_begin() noexcept
+ 	}
+ }
+ 
++// Duke Nukem 3D movement (player.c getinput/processinput), converted to Blake Stone units.
++//
++// Duke, per 30 Hz game tic: vel += input * accel; vel *= dukefriction (0xCC00 / 65536 = 0.797);
++// vel is zeroed once tiny. Forward and sideways input are clamped separately (MAXVEL 90, MAXSVEL 90,
++// running = 80), so strafing runs at full speed and diagonals are ~1.41x faster.
++// Steady running speed = 4708 build units/s. Scale: 1 tile = 1024 build units (Duke's typical
++// ceiling height vs Blake's tile-high walls; both eyes sit at about half the room height),
++// so Duke running = 4.6 tiles/s, walking 2.3 tiles/s.
++double duke_wish_x_ = 0.0;
++double duke_wish_y_ = 0.0;
++
++constexpr auto duke_friction_30hz = 52224.0 / 65536.0;
++constexpr auto duke_run_tiles_per_second = 4708.0 / 1024.0;
++constexpr auto duke_max_input = 90.0 / 80.0;
++
++// Forward/strafe input in units of full running input (1 = running, 0.5 = walking).
++void duke_set_wish(
++	const objtype* ob,
++	double forward,
++	double right) noexcept
++{
++	forward = std::max(-duke_max_input, std::min(forward, duke_max_input));
++	right = std::max(-duke_max_input, std::min(right, duke_max_input));
++
++	const auto c = costable[ob->angle];
++	const auto s = sintable[ob->angle];
++
++	// Forward = (cos, -sin), right = (sin, cos) in Blake Stone's map axes.
++	duke_wish_x_ = (forward * c) + (right * s);
++	duke_wish_y_ = (-forward * s) + (right * c);
++}
++
++void duke_step(
++	int tic_count,
++	double& move_x,
++	double& move_y) noexcept
++{
++	// Same response at 70 Hz: friction^(30/70) per tic, thrust chosen for the same top speed.
++	static const auto friction = std::pow(duke_friction_30hz, 30.0 / TickBase);
++	const auto run_speed = (duke_run_tiles_per_second / TickBase) * (gp_duke_speed_pct() / 100.0);
++	const auto thrust = run_speed * (1.0 - friction) / friction;
++
++	// Duke zeroes velocity below 2048 of ~2.57M (running) per axis.
++	const auto stop_speed = run_speed * (2048.0 / 2571008.0);
++	const auto has_wish = (duke_wish_x_ != 0.0 || duke_wish_y_ != 0.0);
++
++	for (auto i = 0; i < tic_count; ++i)
++	{
++		momentum_velocity_x_ = (momentum_velocity_x_ + (duke_wish_x_ * thrust)) * friction;
++		momentum_velocity_y_ = (momentum_velocity_y_ + (duke_wish_y_ * thrust)) * friction;
++
++		if (!has_wish && std::abs(momentum_velocity_x_) < stop_speed && std::abs(momentum_velocity_y_) < stop_speed)
++		{
++			momentum_velocity_x_ = 0.0;
++			momentum_velocity_y_ = 0.0;
++		}
++
++		move_x += momentum_velocity_x_;
++		move_y += momentum_velocity_y_;
++	}
++
++	duke_wish_x_ = 0.0;
++	duke_wish_y_ = 0.0;
++}
++
+ void momentum_end()
+ {
+ 	if (!momentum_is_collecting_)
+@@ -595,6 +660,11 @@ void momentum_end()
+ 	auto move_x = 0.0;
+ 	auto move_y = 0.0;
+ 
++	if (gp_momentum_style() == momentum_style_duke)
++	{
++		duke_step(tic_count, move_x, move_y);
++	}
++	else
+ 	for (auto i = 0; i < tic_count; ++i)
+ 	{
+ 		const auto delta_x = wish_x - momentum_velocity_x_;
+@@ -810,6 +880,18 @@ void ControlMovement(
+ 		}
+ 	}
+ 
++	if (momentum_is_collecting_ && gp_momentum_style() == momentum_style_duke)
++	{
++		// Duke ignores the per-direction speeds above: forward, back and strafe all use the full input.
++		const auto full_input = static_cast<double>(std::max(static_cast<int>(tics), 1) * 70); // RUNMOVE
++		const auto is_strafing = is_original_strafe || is_modern_strafe;
++
++		duke_set_wish(
++			ob,
++			-controly / full_input,
++			is_strafing ? strafe_value / full_input : 0.0); // +strafe_value = right
++	}
++
+ 	momentum_end();
+ 
+ 	if (controly != 0)
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index 6d951363..d393a867 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -4010,6 +4010,12 @@ bool gp_slow_strafe() noexcept;
+ void gp_slow_strafe(bool is_enabled);
+ int gp_strafe_speed_pct() noexcept;
+ 
++constexpr auto momentum_style_simple = 0;
++constexpr auto momentum_style_duke = 1;
++int gp_momentum_style() noexcept;
++void gp_momentum_style(int style);
++int gp_duke_speed_pct() noexcept;
++
+ // Clears the player's momentum (level start).
+ void momentum_reset() noexcept;
+ 
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index 8d86c51f..32e07458 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11156,7 +11156,33 @@ auto gp_slow_strafe_cvar = bstone::CVar{
+ // gp_strafe_speed_pct (sideways speed in percent of normal speed)
+ 
+ constexpr auto gp_strafe_speed_pct_cvar_name = bstone::StringView{"gp_strafe_speed_pct"};
+-constexpr auto gp_strafe_speed_pct_default = 50;
++
++// gp_momentum_style (0: simple ramp, 1: Duke Nukem 3D)
++
++constexpr auto gp_momentum_style_cvar_name = bstone::StringView{"gp_momentum_style"};
++constexpr auto gp_momentum_style_default = momentum_style_duke;
++
++auto gp_momentum_style_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_momentum_style_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_momentum_style_default,
++	momentum_style_simple,
++	momentum_style_duke};
++
++// gp_duke_speed_pct (Duke style top speed in percent of Duke's speed scaled to Blake Stone)
++
++constexpr auto gp_duke_speed_pct_cvar_name = bstone::StringView{"gp_duke_speed_pct"};
++constexpr auto gp_duke_speed_pct_default = 100;
++
++auto gp_duke_speed_pct_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_duke_speed_pct_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_duke_speed_pct_default,
++	25,
++	400};
++constexpr auto gp_strafe_speed_pct_default = 40;
+ 
+ auto gp_strafe_speed_pct_cvar = bstone::CVar{
+ 	bstone::CVarInt32Tag{},
+@@ -11192,6 +11218,8 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
+ 	cvar_mgr.add(gp_slow_strafe_cvar);
+ 	cvar_mgr.add(gp_strafe_speed_pct_cvar);
++	cvar_mgr.add(gp_momentum_style_cvar);
++	cvar_mgr.add(gp_duke_speed_pct_cvar);
+ }
+ 
+ namespace {
+@@ -11413,6 +11441,21 @@ int gp_strafe_speed_pct() noexcept
+ 	return gp_strafe_speed_pct_cvar.get_int32();
+ }
+ 
++int gp_momentum_style() noexcept
++{
++	return gp_momentum_style_cvar.get_int32();
++}
++
++void gp_momentum_style(int style)
++{
++	gp_momentum_style_cvar.set_int32(style);
++}
++
++int gp_duke_speed_pct() noexcept
++{
++	return gp_duke_speed_pct_cvar.get_int32();
++}
++
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();
+diff --git a/src/bstone/src/3d_menu.cpp b/src/bstone/src/3d_menu.cpp
+index 2e700bb1..f1680a87 100644
+--- a/src/bstone/src/3d_menu.cpp
++++ b/src/bstone/src/3d_menu.cpp
+@@ -6125,14 +6125,22 @@ void draw_switch2_description(
+ 
+ 	VWB_Bar(WindowX, WindowY - 1, WindowW, WindowH, menu_background_color);
+ 
++	const char* text = instr[which];
++
++	if (which == SW2_MOMENTUM)
++	{
++		text = !gp_momentum() ? "MOMENTUM: OFF" :
++			(gp_momentum_style() == momentum_style_duke ? "MOMENTUM: DUKE NUKEM 3D" : "MOMENTUM: SIMPLE");
++	}
++
+ 	SETFONTCOLOR(TERM_SHADOW_COLOR, TERM_BACK_COLOR);
+-	US_PrintCentered(instr[which]);
++	US_PrintCentered(text);
+ 
+ 	WindowX--;
+ 	WindowY--;
+ 
+ 	SETFONTCOLOR(INSTRUCTIONS_TEXT_COLOR, TERM_BACK_COLOR);
+-	US_PrintCentered(instr[which]);
++	US_PrintCentered(text);
+ }
+ 
+ void draw_all_switch2_lights(
+@@ -6310,7 +6318,20 @@ void cp_switches2(
+ 			break;
+ 
+ 		case SW2_MOMENTUM:
+-			gp_momentum(!gp_momentum());
++			// Cycles off -> simple -> Duke Nukem 3D -> off.
++			if (!gp_momentum())
++			{
++				gp_momentum(true);
++				gp_momentum_style(momentum_style_simple);
++			}
++			else if (gp_momentum_style() == momentum_style_simple)
++			{
++				gp_momentum_style(momentum_style_duke);
++			}
++			else
++			{
++				gp_momentum(false);
++			}
+ 			ShootSnd();
+ 			draw_switch2_menu();
+ 			break;

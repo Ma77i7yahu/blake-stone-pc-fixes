@@ -1,0 +1,112 @@
+From 21f402fbfb3b6d3e3daa154128b52874e8b75e50 Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 12:55:59 +1100
+Subject: [PATCH 15/16] gp_possum_shootable (default on): Star Troopers playing
+ possum stay shootable and die when out of hit points
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/bstone/src/3d_def.h     |  4 ++++
+ src/bstone/src/3d_main.cpp  | 17 +++++++++++++++++
+ src/bstone/src/3d_state.cpp | 17 +++++++++++++++++
+ 3 files changed, 38 insertions(+)
+
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index 1ce4d119..afab92ed 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -3623,6 +3623,9 @@ extern statetype s_hold;
+ 
+ 
+ extern statetype s_swatwounded1;
++extern statetype s_swatwounded2;
++extern statetype s_swatwounded3;
++extern statetype s_swatwounded4;
+ 
+ extern statetype s_deathcam;
+ 
+@@ -4007,6 +4010,7 @@ void gp_momentum(bool is_enabled);
+ int gp_momentum_accel_ms() noexcept;
+ int gp_momentum_friction_ms() noexcept;
+ bool gp_automap_secrets() noexcept;
++bool gp_possum_shootable() noexcept;
+ bool gp_slow_strafe() noexcept;
+ void gp_slow_strafe(bool is_enabled);
+ int gp_strafe_speed_pct() noexcept;
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index 164c1d53..3f0298ea 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11153,6 +11153,17 @@ auto gp_automap_secrets_cvar = bstone::CVar{
+ 	bstone::CVarFlags::archive,
+ 	gp_automap_secrets_default};
+ 
++// gp_possum_shootable (Star Troopers playing possum can still be shot)
++
++constexpr auto gp_possum_shootable_cvar_name = bstone::StringView{"gp_possum_shootable"};
++constexpr auto gp_possum_shootable_default = true;
++
++auto gp_possum_shootable_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_possum_shootable_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_possum_shootable_default};
++
+ // gp_slow_strafe (sideways movement uses gp_strafe_speed_pct of normal speed)
+ 
+ constexpr auto gp_slow_strafe_cvar_name = bstone::StringView{"gp_slow_strafe"};
+@@ -11252,6 +11263,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_momentum_accel_ms_cvar);
+ 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
+ 	cvar_mgr.add(gp_automap_secrets_cvar);
++	cvar_mgr.add(gp_possum_shootable_cvar);
+ 	cvar_mgr.add(gp_slow_strafe_cvar);
+ 	cvar_mgr.add(gp_strafe_speed_pct_cvar);
+ 	cvar_mgr.add(gp_momentum_style_cvar);
+@@ -11469,6 +11481,11 @@ bool gp_automap_secrets() noexcept
+ 	return gp_automap_secrets_cvar.get_bool();
+ }
+ 
++bool gp_possum_shootable() noexcept
++{
++	return gp_possum_shootable_cvar.get_bool();
++}
++
+ bool gp_slow_strafe() noexcept
+ {
+ 	return gp_slow_strafe_cvar.get_bool();
+diff --git a/src/bstone/src/3d_state.cpp b/src/bstone/src/3d_state.cpp
+index f95caace..973b45e8 100644
+--- a/src/bstone/src/3d_state.cpp
++++ b/src/bstone/src/3d_state.cpp
+@@ -1544,6 +1544,18 @@ void DamageActor(
+ 		switch (ob->obclass)
+ 		{
+ 		case swatobj:
++			// gp_possum_shootable: a trooper playing possum takes the hit and
++			// stays down (it dies once its hit points run out).
++			//
++			if (gp_possum_shootable() &&
++				(ob->state == &s_swatwounded1 ||
++					ob->state == &s_swatwounded2 ||
++					ob->state == &s_swatwounded3 ||
++					ob->state == &s_swatwounded4))
++			{
++				return;
++			}
++
+ 			// Don't get wounded if it's an arc!
+ 			//
+ 			if ((attacker->obclass == arc_barrierobj) ||
+@@ -1570,6 +1582,11 @@ void DamageActor(
+ 
+ 				NewState(ob, &s_swatwounded1);
+ 				ob->flags &= ~(FL_SHOOTABLE | FL_SOLID);
++
++				if (gp_possum_shootable())
++				{
++					ob->flags |= FL_SHOOTABLE;
++				}
+ 				ob->temp2 = (5 * 60) + ((US_RndT() % 20) * 60);
+ 				return;
+ 			}

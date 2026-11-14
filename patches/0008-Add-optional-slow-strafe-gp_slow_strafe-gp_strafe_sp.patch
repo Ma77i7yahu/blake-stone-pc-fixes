@@ -1,0 +1,212 @@
+From 18882e1ad9aa85412592f842126c93ad7b4a5246 Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 01:07:54 +1100
+Subject: [PATCH 08/16] Add optional slow strafe (gp_slow_strafe,
+ gp_strafe_speed_pct, menu switch)
+
+Sideways movement uses gp_strafe_speed_pct (default 50) of normal speed when
+SLOW STRAFE is on, so strafing is closer to modern shooters such as Battlefront.
+Demos keep full speed. Game Switches 2 now has nine items.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/bstone/src/3d_agent.cpp | 15 ++++++++++++--
+ src/bstone/src/3d_def.h     |  3 +++
+ src/bstone/src/3d_main.cpp  | 41 +++++++++++++++++++++++++++++++++++++
+ src/bstone/src/3d_menu.cpp  | 21 ++++++++++++++++++-
+ 4 files changed, 77 insertions(+), 3 deletions(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 888c5749..3fa40712 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -527,6 +527,17 @@ double momentum_wish_y_ = 0.0;
+ double momentum_velocity_x_ = 0.0;
+ double momentum_velocity_y_ = 0.0;
+ 
++// Sideways speed multiplier (gp_slow_strafe / gp_strafe_speed_pct); full speed in demos.
++double strafe_speed_scale() noexcept
++{
++	if (!gp_slow_strafe() || demorecord || demoplayback)
++	{
++		return 1.0;
++	}
++
++	return gp_strafe_speed_pct() / 100.0;
++}
++
+ bool momentum_is_enabled() noexcept
+ {
+ 	return gp_momentum() && !demorecord && !demoplayback;
+@@ -710,7 +721,7 @@ void ControlMovement(
+ 		const auto sign = (strafe_value > 0 ? 1 : -1);
+ 		const auto angle = clamp_angle(ob->angle + (sign * (ANGLES / 4)));
+ 
+-		player_thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE);
++		player_thrust(static_cast<std::int16_t>(angle), -abs(strafe_value) * MOVESCALE * strafe_speed_scale());
+ 	}
+ #endif
+ 
+@@ -769,7 +780,7 @@ void ControlMovement(
+ 
+ 	if (is_modern_strafe && controly != 0)
+ 	{
+-		const auto x = -strafe_value * MOVESCALE;
++		const auto x = -strafe_value * MOVESCALE * strafe_speed_scale();
+ 		const auto y = -controly * (controly < 0 ? MOVESCALE : BACKMOVESCALE);
+ 
+ 		const auto angle_delta = 90 - static_cast<int>(bstone::math::rad_to_deg(std::atan2(y, x)));
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index 230bba00..6d951363 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -4006,6 +4006,9 @@ bool gp_momentum() noexcept;
+ void gp_momentum(bool is_enabled);
+ int gp_momentum_accel_ms() noexcept;
+ int gp_momentum_friction_ms() noexcept;
++bool gp_slow_strafe() noexcept;
++void gp_slow_strafe(bool is_enabled);
++int gp_strafe_speed_pct() noexcept;
+ 
+ // Clears the player's momentum (level start).
+ void momentum_reset() noexcept;
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index 1abbeb13..8d86c51f 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11142,6 +11142,30 @@ auto gp_momentum_friction_ms_cvar = bstone::CVar{
+ 	0,
+ 	2000};
+ 
++// gp_slow_strafe (sideways movement uses gp_strafe_speed_pct of normal speed)
++
++constexpr auto gp_slow_strafe_cvar_name = bstone::StringView{"gp_slow_strafe"};
++constexpr auto gp_slow_strafe_default = true;
++
++auto gp_slow_strafe_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_slow_strafe_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_slow_strafe_default};
++
++// gp_strafe_speed_pct (sideways speed in percent of normal speed)
++
++constexpr auto gp_strafe_speed_pct_cvar_name = bstone::StringView{"gp_strafe_speed_pct"};
++constexpr auto gp_strafe_speed_pct_default = 50;
++
++auto gp_strafe_speed_pct_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_strafe_speed_pct_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_strafe_speed_pct_default,
++	10,
++	100};
++
+ } // namespace
+ 
+ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+@@ -11166,6 +11190,8 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_momentum_cvar);
+ 	cvar_mgr.add(gp_momentum_accel_ms_cvar);
+ 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
++	cvar_mgr.add(gp_slow_strafe_cvar);
++	cvar_mgr.add(gp_strafe_speed_pct_cvar);
+ }
+ 
+ namespace {
+@@ -11372,6 +11398,21 @@ int gp_momentum_friction_ms() noexcept
+ 	return gp_momentum_friction_ms_cvar.get_int32();
+ }
+ 
++bool gp_slow_strafe() noexcept
++{
++	return gp_slow_strafe_cvar.get_bool();
++}
++
++void gp_slow_strafe(bool is_enabled)
++{
++	gp_slow_strafe_cvar.set_bool(is_enabled);
++}
++
++int gp_strafe_speed_pct() noexcept
++{
++	return gp_strafe_speed_pct_cvar.get_int32();
++}
++
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();
+diff --git a/src/bstone/src/3d_menu.cpp b/src/bstone/src/3d_menu.cpp
+index e2578705..2e700bb1 100644
+--- a/src/bstone/src/3d_menu.cpp
++++ b/src/bstone/src/3d_menu.cpp
+@@ -122,6 +122,7 @@ enum sw2_labels
+ 	SW2_SHOW_CROSSHAIR,
+ 	SW2_SMOOTH_MOTION,
+ 	SW2_MOMENTUM,
++	SW2_SLOW_STRAFE,
+ }; // sw2_labels
+ 
+ enum MenuVideoLables
+@@ -423,7 +424,7 @@ CP_iteminfo SwitchItems = {MENU_X, 0, 0, 0, 0, 9, {87, -1, 132, 7, 1}};
+ CP_iteminfo video_items = {MENU_X, MENU_Y + 30, 5, 0, 0, 9, {77, -1, 154, 7, 1}};
+ CP_iteminfo video_mode_items = {MENU_X - 31, MENU_Y + 10, 8, 0, 0, 9, {67, -1, 184, 7, 1}};
+ CP_iteminfo texturing_items = {MENU_X, MENU_Y + 10, 7, 0, 0, 9, {77, -1, 154, 7, 1}};
+-CP_iteminfo switches2_items = {MENU_X, MENU_Y + 21, 8, 0, 0, 9, {87, -1, 132, 7, 1}};
++CP_iteminfo switches2_items = {MENU_X, MENU_Y + 3, 9, 0, 0, 9, {87, -1, 132, 7, 1}};
+ // BBi
+ 
+ 
+@@ -501,6 +502,7 @@ CP_itemtype switch2_menu[] =
+ 	{AT_ENABLED, "SHOW CROSSHAIR", 0},
+ 	{AT_ENABLED, "SMOOTH MOTION", 0},
+ 	{AT_ENABLED, "MOMENTUM", 0},
++	{AT_ENABLED, "SLOW STRAFE", 0},
+ };
+ 
+ CP_itemtype NewEmenu[] = {
+@@ -6109,6 +6111,7 @@ void draw_switch2_description(
+ 		"TOGGLES AIMING CROSSHAIR",
+ 		"TOGGLES DRAWING BETWEEN GAME TICS",
+ 		"TOGGLES MOVEMENT ACCELERATION",
++		"TOGGLES SLOWER SIDEWAYS MOVEMENT",
+ 	};
+ 
+ 	const auto& assets_info = get_assets_info();
+@@ -6213,6 +6216,13 @@ void draw_all_switch2_lights(
+ 					shape += 1;
+ 				}
+ 				break;
++
++			case SW2_SLOW_STRAFE:
++				if (gp_slow_strafe())
++				{
++					shape += 1;
++				}
++				break;
+ 			}
+ 
+ 			VWB_DrawPic(switches2_items.x - 16, switches2_items.y + (i * switches2_items.y_spacing) - 1, shape);
+@@ -6241,6 +6251,9 @@ void draw_switch2_menu()
+ void cp_switches2(
+ 	std::int16_t)
+ {
++	// Nine items: start higher on Planet Strike, whose description line sits higher.
++	switches2_items.y = MENU_Y + (get_assets_info().is_ps() ? -6 : 3);
++
+ 	CA_CacheScreen(BACKGROUND_SCREENPIC);
+ 	draw_switch2_menu();
+ 	MenuFadeIn();
+@@ -6301,6 +6314,12 @@ void cp_switches2(
+ 			ShootSnd();
+ 			draw_switch2_menu();
+ 			break;
++
++		case SW2_SLOW_STRAFE:
++			gp_slow_strafe(!gp_slow_strafe());
++			ShootSnd();
++			draw_switch2_menu();
++			break;
+ 		}
+ 	} while (which >= 0);
+ 

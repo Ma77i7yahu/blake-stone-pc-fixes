@@ -1,0 +1,4 @@
+# Builds never go in the repo; the installer is attached to Releases instead.
+*.exe
+*.dll
+*.zip

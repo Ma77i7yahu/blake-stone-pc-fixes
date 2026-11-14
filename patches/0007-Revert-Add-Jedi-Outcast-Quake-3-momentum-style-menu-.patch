@@ -1,0 +1,289 @@
+From 70d7ce554e85d3b72da50e4ca0dbe95e3b23c853 Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 00:25:01 +1100
+Subject: [PATCH 07/16] Revert "Add Jedi Outcast (Quake 3) momentum style, menu
+ cycles off/simple/JO"
+
+This reverts commit 15121319fd66a114dce221ba384132c6bf9f27c3.
+---
+ src/bstone/src/3d_agent.cpp | 78 ++++++++----------------------------
+ src/bstone/src/3d_def.h     |  8 ----
+ src/bstone/src/3d_main.cpp  | 79 -------------------------------------
+ src/bstone/src/3d_menu.cpp  | 28 ++-----------
+ 4 files changed, 19 insertions(+), 174 deletions(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 6ad4e60e..888c5749 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -576,79 +576,33 @@ void momentum_end()
+ 	const auto wish_y = momentum_wish_y_ / tic_count;
+ 	const auto has_wish = (wish_x != 0.0 || wish_y != 0.0);
+ 
++	// Rates are relative to full running speed, so the times are 0 -> full run and full run -> 0.
+ 	constexpr auto run_speed = 70 * MOVESCALE;
+-	constexpr auto tic_seconds = 1.0 / TickBase;
++	const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
++	const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
+ 
+ 	auto move_x = 0.0;
+ 	auto move_y = 0.0;
+ 
+-	if (gp_momentum_style() == momentum_style_jedi_outcast)
++	for (auto i = 0; i < tic_count; ++i)
+ 	{
+-		// Quake 3 / Jedi Outcast ground movement (PM_Friction + PM_Accelerate) run once per tic.
+-		// Speeds are relative to running speed: JO runs at 250 units/s with a stop speed of 100.
+-		const auto accelerate = static_cast<double>(gp_momentum_jo_accelerate());
+-		const auto friction = static_cast<double>(gp_momentum_jo_friction());
+-		const auto stop_speed = run_speed * (gp_momentum_jo_stop_speed_pct() / 100.0);
+-		const auto wish_speed = std::sqrt((wish_x * wish_x) + (wish_y * wish_y));
++		const auto delta_x = wish_x - momentum_velocity_x_;
++		const auto delta_y = wish_y - momentum_velocity_y_;
++		const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
+ 
+-		for (auto i = 0; i < tic_count; ++i)
++		if (delta <= max_step)
+ 		{
+-			const auto speed = std::sqrt(
+-				(momentum_velocity_x_ * momentum_velocity_x_) + (momentum_velocity_y_ * momentum_velocity_y_));
+-
+-			if (speed > 0.0)
+-			{
+-				const auto control = std::max(speed, stop_speed);
+-				const auto new_speed = std::max(speed - (control * friction * tic_seconds), 0.0);
+-				momentum_velocity_x_ *= new_speed / speed;
+-				momentum_velocity_y_ *= new_speed / speed;
+-			}
+-
+-			if (has_wish)
+-			{
+-				const auto dir_x = wish_x / wish_speed;
+-				const auto dir_y = wish_y / wish_speed;
+-				const auto current_speed = (momentum_velocity_x_ * dir_x) + (momentum_velocity_y_ * dir_y);
+-				const auto add_speed = wish_speed - current_speed;
+-
+-				if (add_speed > 0.0)
+-				{
+-					const auto accel_speed = std::min(accelerate * tic_seconds * wish_speed, add_speed);
+-					momentum_velocity_x_ += accel_speed * dir_x;
+-					momentum_velocity_y_ += accel_speed * dir_y;
+-				}
+-			}
+-
+-			move_x += momentum_velocity_x_;
+-			move_y += momentum_velocity_y_;
++			momentum_velocity_x_ = wish_x;
++			momentum_velocity_y_ = wish_y;
+ 		}
+-	}
+-	else
+-	{
+-		// Simple: straight-line ramp. Times are 0 -> full run and full run -> 0.
+-		const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
+-		const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
+-
+-		for (auto i = 0; i < tic_count; ++i)
++		else
+ 		{
+-			const auto delta_x = wish_x - momentum_velocity_x_;
+-			const auto delta_y = wish_y - momentum_velocity_y_;
+-			const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
+-
+-			if (delta <= max_step)
+-			{
+-				momentum_velocity_x_ = wish_x;
+-				momentum_velocity_y_ = wish_y;
+-			}
+-			else
+-			{
+-				momentum_velocity_x_ += delta_x * (max_step / delta);
+-				momentum_velocity_y_ += delta_y * (max_step / delta);
+-			}
+-
+-			move_x += momentum_velocity_x_;
+-			move_y += momentum_velocity_y_;
++			momentum_velocity_x_ += delta_x * (max_step / delta);
++			momentum_velocity_y_ += delta_y * (max_step / delta);
+ 		}
++
++		move_x += momentum_velocity_x_;
++		move_y += momentum_velocity_y_;
+ 	}
+ 
+ 	auto speed = std::sqrt((move_x * move_x) + (move_y * move_y));
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index b2b77eb7..230bba00 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -4007,14 +4007,6 @@ void gp_momentum(bool is_enabled);
+ int gp_momentum_accel_ms() noexcept;
+ int gp_momentum_friction_ms() noexcept;
+ 
+-constexpr auto momentum_style_simple = 0;
+-constexpr auto momentum_style_jedi_outcast = 1;
+-int gp_momentum_style() noexcept;
+-void gp_momentum_style(int style);
+-int gp_momentum_jo_accelerate() noexcept;
+-int gp_momentum_jo_friction() noexcept;
+-int gp_momentum_jo_stop_speed_pct() noexcept;
+-
+ // Clears the player's momentum (level start).
+ void momentum_reset() noexcept;
+ 
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index a78d3d29..1abbeb13 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11142,57 +11142,6 @@ auto gp_momentum_friction_ms_cvar = bstone::CVar{
+ 	0,
+ 	2000};
+ 
+-// gp_momentum_style (0: simple ramp, 1: Jedi Outcast / Quake 3)
+-
+-constexpr auto gp_momentum_style_cvar_name = bstone::StringView{"gp_momentum_style"};
+-constexpr auto gp_momentum_style_default = momentum_style_jedi_outcast;
+-
+-auto gp_momentum_style_cvar = bstone::CVar{
+-	bstone::CVarInt32Tag{},
+-	gp_momentum_style_cvar_name,
+-	bstone::CVarFlags::archive,
+-	gp_momentum_style_default,
+-	momentum_style_simple,
+-	momentum_style_jedi_outcast};
+-
+-// gp_momentum_jo_accelerate (Jedi Outcast pm_accelerate)
+-
+-constexpr auto gp_momentum_jo_accelerate_cvar_name = bstone::StringView{"gp_momentum_jo_accelerate"};
+-constexpr auto gp_momentum_jo_accelerate_default = 10;
+-
+-auto gp_momentum_jo_accelerate_cvar = bstone::CVar{
+-	bstone::CVarInt32Tag{},
+-	gp_momentum_jo_accelerate_cvar_name,
+-	bstone::CVarFlags::archive,
+-	gp_momentum_jo_accelerate_default,
+-	1,
+-	100};
+-
+-// gp_momentum_jo_friction (Jedi Outcast pm_friction)
+-
+-constexpr auto gp_momentum_jo_friction_cvar_name = bstone::StringView{"gp_momentum_jo_friction"};
+-constexpr auto gp_momentum_jo_friction_default = 6;
+-
+-auto gp_momentum_jo_friction_cvar = bstone::CVar{
+-	bstone::CVarInt32Tag{},
+-	gp_momentum_jo_friction_cvar_name,
+-	bstone::CVarFlags::archive,
+-	gp_momentum_jo_friction_default,
+-	0,
+-	100};
+-
+-// gp_momentum_jo_stop_speed_pct (pm_stopspeed as a percentage of running speed; JO: 100 of 250)
+-
+-constexpr auto gp_momentum_jo_stop_speed_pct_cvar_name = bstone::StringView{"gp_momentum_jo_stop_speed_pct"};
+-constexpr auto gp_momentum_jo_stop_speed_pct_default = 40;
+-
+-auto gp_momentum_jo_stop_speed_pct_cvar = bstone::CVar{
+-	bstone::CVarInt32Tag{},
+-	gp_momentum_jo_stop_speed_pct_cvar_name,
+-	bstone::CVarFlags::archive,
+-	gp_momentum_jo_stop_speed_pct_default,
+-	0,
+-	200};
+ } // namespace
+ 
+ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+@@ -11217,10 +11166,6 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_momentum_cvar);
+ 	cvar_mgr.add(gp_momentum_accel_ms_cvar);
+ 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
+-	cvar_mgr.add(gp_momentum_style_cvar);
+-	cvar_mgr.add(gp_momentum_jo_accelerate_cvar);
+-	cvar_mgr.add(gp_momentum_jo_friction_cvar);
+-	cvar_mgr.add(gp_momentum_jo_stop_speed_pct_cvar);
+ }
+ 
+ namespace {
+@@ -11427,30 +11372,6 @@ int gp_momentum_friction_ms() noexcept
+ 	return gp_momentum_friction_ms_cvar.get_int32();
+ }
+ 
+-int gp_momentum_style() noexcept
+-{
+-	return gp_momentum_style_cvar.get_int32();
+-}
+-
+-void gp_momentum_style(int style)
+-{
+-	gp_momentum_style_cvar.set_int32(style);
+-}
+-
+-int gp_momentum_jo_accelerate() noexcept
+-{
+-	return gp_momentum_jo_accelerate_cvar.get_int32();
+-}
+-
+-int gp_momentum_jo_friction() noexcept
+-{
+-	return gp_momentum_jo_friction_cvar.get_int32();
+-}
+-
+-int gp_momentum_jo_stop_speed_pct() noexcept
+-{
+-	return gp_momentum_jo_stop_speed_pct_cvar.get_int32();
+-}
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();
+diff --git a/src/bstone/src/3d_menu.cpp b/src/bstone/src/3d_menu.cpp
+index 7ec56110..e2578705 100644
+--- a/src/bstone/src/3d_menu.cpp
++++ b/src/bstone/src/3d_menu.cpp
+@@ -6122,22 +6122,14 @@ void draw_switch2_description(
+ 
+ 	VWB_Bar(WindowX, WindowY - 1, WindowW, WindowH, menu_background_color);
+ 
+-	const char* text = instr[which];
+-
+-	if (which == SW2_MOMENTUM)
+-	{
+-		text = !gp_momentum() ? "MOMENTUM: OFF" :
+-			(gp_momentum_style() == momentum_style_jedi_outcast ? "MOMENTUM: JEDI OUTCAST" : "MOMENTUM: SIMPLE");
+-	}
+-
+ 	SETFONTCOLOR(TERM_SHADOW_COLOR, TERM_BACK_COLOR);
+-	US_PrintCentered(text);
++	US_PrintCentered(instr[which]);
+ 
+ 	WindowX--;
+ 	WindowY--;
+ 
+ 	SETFONTCOLOR(INSTRUCTIONS_TEXT_COLOR, TERM_BACK_COLOR);
+-	US_PrintCentered(text);
++	US_PrintCentered(instr[which]);
+ }
+ 
+ void draw_all_switch2_lights(
+@@ -6305,21 +6297,7 @@ void cp_switches2(
+ 			break;
+ 
+ 		case SW2_MOMENTUM:
+-			// Cycles off -> simple -> Jedi Outcast -> off.
+-			if (!gp_momentum())
+-			{
+-				gp_momentum(true);
+-				gp_momentum_style(momentum_style_simple);
+-			}
+-			else if (gp_momentum_style() == momentum_style_simple)
+-			{
+-				gp_momentum_style(momentum_style_jedi_outcast);
+-			}
+-			else
+-			{
+-				gp_momentum(false);
+-			}
+-
++			gp_momentum(!gp_momentum());
+ 			ShootSnd();
+ 			draw_switch2_menu();
+ 			break;

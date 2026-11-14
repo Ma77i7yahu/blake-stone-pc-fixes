@@ -1,0 +1,531 @@
+From ba4bd9558100c0965e6780dbf733c804a38bc895 Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 23:17:54 +1100
+Subject: [PATCH 03/16] Smooth motion: draw at display rate, interpolate camera
+ between tics (gp_smooth_motion)
+
+---
+ src/bstone/src/3d_agent.cpp        |   2 +-
+ src/bstone/src/3d_def.h            |  16 +++
+ src/bstone/src/3d_draw.cpp         | 173 ++++++++++++++++++++++++++---
+ src/bstone/src/3d_main.cpp         |  21 ++++
+ src/bstone/src/3d_menu.cpp         |  18 ++-
+ src/bstone/src/3d_play.cpp         |  82 ++++++++++++--
+ src/bstone/src/bstone_hw_video.cpp |   4 +-
+ 7 files changed, 287 insertions(+), 29 deletions(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index f89043fc..072345d0 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -494,7 +494,7 @@ int clamp_angle(
+ double player_get_view_angle() noexcept
+ {
+ 	// The logical angle is whole degrees; anglefrac holds the pending remainder (in 1/ANGLESCALE degree units).
+-	auto angle = player->angle - (static_cast<double>(anglefrac) / ANGLESCALE);
++	auto angle = player->angle - ((anglefrac + smooth_motion_get_preview_turn()) / ANGLESCALE);
+ 
+ 	while (angle >= ANGLES)
+ 	{
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index b90031d3..e36e9dc1 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -3370,6 +3370,19 @@ extern int anglefrac;
+ // Player's view angle in degrees [0, ANGLES) including the sub-degree turn remainder.
+ double player_get_view_angle() noexcept;
+ 
++// Smooth motion: frames are drawn at the display rate and the camera position is
++// interpolated between game tics. Game logic still runs on whole tics.
++void CalcTicsNoSleep();
++void smooth_motion_reset(bool is_active) noexcept;
++bool smooth_motion_is_active() noexcept;
++bool smooth_motion_is_tic_pending() noexcept;
++void smooth_motion_end_logic_frame() noexcept;
++// Mouse turn (in controlx units) not yet applied by game logic; drawn in frames between tics.
++void smooth_motion_set_preview_turn(double control_x) noexcept;
++double smooth_motion_get_preview_turn() noexcept;
++double player_get_view_x() noexcept;
++double player_get_view_y() noexcept;
++
+ extern std::uint16_t LastMsgPri;
+ extern std::int16_t MsgTicsRemain;
+ 
+@@ -3978,6 +3991,9 @@ void gp_ps_map_in_stats(bool is_enabled);
+ bool gp_show_crosshair() noexcept;
+ void gp_show_crosshair(bool is_enabled);
+ 
++bool gp_smooth_motion() noexcept;
++void gp_smooth_motion(bool is_enabled);
++
+ bool am_rotatable() noexcept;
+ void am_rotatable(bool is_enable);
+ 
+diff --git a/src/bstone/src/3d_draw.cpp b/src/bstone/src/3d_draw.cpp
+index f9f4c5e8..e1e31c07 100644
+--- a/src/bstone/src/3d_draw.cpp
++++ b/src/bstone/src/3d_draw.cpp
+@@ -1526,21 +1526,37 @@ void DrawCrosshair()
+ 	}
+ }
+ 
+-void CalcTics()
++namespace {
++
++constexpr long long calc_tics_one_second_ns = 1'000'000'000;
++using CalcTicsClock = std::chrono::steady_clock;
++long long calc_tics_period_counter = 0;
++CalcTicsClock::time_point calc_tics_last_time_point{};
++
++// Smooth motion state (see smooth_motion_reset).
++bool smooth_motion_active_ = false;
++double smooth_motion_prev_x_ = 0.0;
++double smooth_motion_prev_y_ = 0.0;
++double smooth_motion_cur_x_ = 0.0;
++double smooth_motion_cur_y_ = 0.0;
++int smooth_motion_span_ = 1;
++double smooth_motion_preview_turn_ = 0.0;
++
++void calc_tics_impl(bool is_sleep)
+ {
+-	constexpr long long one_second_ns = 1'000'000'000;
+-	using Clock = std::chrono::steady_clock;
+-	using TimePoint = Clock::time_point;
+-	static long long period_counter = 0;
+-	static TimePoint last_time_point{};
+-	const TimePoint time_point = Clock::now();
+-	const long long diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(time_point - last_time_point).count();
+-	last_time_point = time_point;
+-	period_counter += diff_ns * TickBase;
+-	const long long elapsed_periods = period_counter / one_second_ns;
+-	period_counter %= one_second_ns;
+-	const std::chrono::nanoseconds delay{(one_second_ns - period_counter) / TickBase};
+-	std::this_thread::sleep_for(delay);
++	const auto time_point = CalcTicsClock::now();
++	const long long diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(time_point - calc_tics_last_time_point).count();
++	calc_tics_last_time_point = time_point;
++	calc_tics_period_counter += diff_ns * TickBase;
++	const long long elapsed_periods = calc_tics_period_counter / calc_tics_one_second_ns;
++	calc_tics_period_counter %= calc_tics_one_second_ns;
++
++	if (is_sleep)
++	{
++		const std::chrono::nanoseconds delay{(calc_tics_one_second_ns - calc_tics_period_counter) / TickBase};
++		std::this_thread::sleep_for(delay);
++	}
++
+ 	constexpr long long min_tics = 1;
+ 	constexpr long long max_tics = UINT16_MAX;
+ 	tics = static_cast<std::uint16_t>(bstone::clamp(elapsed_periods, min_tics, max_tics));
+@@ -1564,6 +1580,125 @@ void CalcTics()
+ 	}
+ }
+ 
++// Game tics elapsed since the last CalcTics call (fractional).
++double calc_tics_get_pending() noexcept
++{
++	const auto diff_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++		CalcTicsClock::now() - calc_tics_last_time_point).count();
++
++	return static_cast<double>(calc_tics_period_counter + (diff_ns * TickBase)) / calc_tics_one_second_ns;
++}
++
++} // namespace
++
++void CalcTics()
++{
++	calc_tics_impl(true);
++}
++
++void CalcTicsNoSleep()
++{
++	calc_tics_impl(false);
++}
++
++void smooth_motion_reset(bool is_active) noexcept
++{
++	smooth_motion_active_ = is_active;
++	calc_tics_period_counter = 0;
++	calc_tics_last_time_point = CalcTicsClock::now();
++	smooth_motion_prev_x_ = player->x;
++	smooth_motion_prev_y_ = player->y;
++	smooth_motion_cur_x_ = player->x;
++	smooth_motion_cur_y_ = player->y;
++	smooth_motion_span_ = 1;
++	smooth_motion_preview_turn_ = 0.0;
++}
++
++bool smooth_motion_is_active() noexcept
++{
++	return smooth_motion_active_;
++}
++
++bool smooth_motion_is_tic_pending() noexcept
++{
++	return calc_tics_get_pending() >= 1.0;
++}
++
++void smooth_motion_end_logic_frame() noexcept
++{
++	smooth_motion_prev_x_ = smooth_motion_cur_x_;
++	smooth_motion_prev_y_ = smooth_motion_cur_y_;
++	smooth_motion_cur_x_ = player->x;
++	smooth_motion_cur_y_ = player->y;
++	smooth_motion_span_ = std::max(static_cast<int>(tics), 1);
++	smooth_motion_preview_turn_ = 0.0;
++
++	// Don't slide across teleports, elevators and level changes.
++	const auto dx = smooth_motion_cur_x_ - smooth_motion_prev_x_;
++	const auto dy = smooth_motion_cur_y_ - smooth_motion_prev_y_;
++
++	if ((dx * dx) + (dy * dy) > 1.0)
++	{
++		smooth_motion_prev_x_ = smooth_motion_cur_x_;
++		smooth_motion_prev_y_ = smooth_motion_cur_y_;
++	}
++}
++
++void smooth_motion_set_preview_turn(double control_x) noexcept
++{
++	smooth_motion_preview_turn_ = control_x;
++}
++
++double smooth_motion_get_preview_turn() noexcept
++{
++	return smooth_motion_active_ ? smooth_motion_preview_turn_ : 0.0;
++}
++
++namespace {
++
++// Interpolation factor between the previous and the current logic frame.
++// The camera is drawn one tic behind the game so it always has two states to blend.
++double smooth_motion_get_alpha() noexcept
++{
++	if (!smooth_motion_active_)
++	{
++		return 1.0;
++	}
++
++	const auto pending = bstone::clamp(calc_tics_get_pending(), 0.0, 1.0);
++	const auto span = static_cast<double>(smooth_motion_span_);
++
++	return bstone::clamp((span - 1.0 + pending) / span, 0.0, 1.0);
++}
++
++// False when smoothing is off or the player was moved outside of the play loop's logic.
++bool smooth_motion_is_camera_tracking() noexcept
++{
++	return smooth_motion_active_ && player->x == smooth_motion_cur_x_ && player->y == smooth_motion_cur_y_;
++}
++
++} // namespace
++
++double player_get_view_x() noexcept
++{
++	if (!smooth_motion_is_camera_tracking())
++	{
++		return player->x;
++	}
++
++	return smooth_motion_prev_x_ + ((smooth_motion_cur_x_ - smooth_motion_prev_x_) * smooth_motion_get_alpha());
++}
++
++double player_get_view_y() noexcept
++{
++	if (!smooth_motion_is_camera_tracking())
++	{
++		return player->y;
++	}
++
++	return smooth_motion_prev_y_ + ((smooth_motion_cur_y_ - smooth_motion_prev_y_) * smooth_motion_get_alpha());
++}
++
+ void WallRefresh()
+ {
+ 	//
+@@ -1577,14 +1712,16 @@ void WallRefresh()
+ 	const auto view_angle_rad = bstone::math::deg_to_rad(view_angle);
+ 	viewsin = std::sin(view_angle_rad);
+ 	viewcos = std::cos(view_angle_rad);
+-	viewx = player->x - (focallength * viewcos);
+-	viewy = player->y + (focallength * viewsin);
++	const auto player_view_x = player_get_view_x();
++	const auto player_view_y = player_get_view_y();
++	viewx = player_view_x - (focallength * viewcos);
++	viewy = player_view_y + (focallength * viewsin);
+ 
+ 	focaltx = static_cast<int>(viewx);
+ 	focalty = static_cast<int>(viewy);
+ 
+-	viewtx = static_cast<int>(player->x);
+-	viewty = static_cast<int>(player->y);
++	viewtx = static_cast<int>(player_view_x);
++	viewty = static_cast<int>(player_view_y);
+ 
+ 	xpartialdown = get_fractional(viewx);
+ 	xpartialup = 1.0 - xpartialdown;
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index 7d843288..89c5e67c 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11083,6 +11083,17 @@ auto gp_show_crosshair_cvar = bstone::CVar{
+ 	bstone::CVarFlags::archive,
+ 	gp_show_crosshair_default};
+ 
++// gp_smooth_motion
++
++constexpr auto gp_smooth_motion_cvar_name = bstone::StringView{"gp_smooth_motion"};
++constexpr auto gp_smooth_motion_default = true;
++
++auto gp_smooth_motion_cvar = bstone::CVar{
++	bstone::CVarBoolTag{},
++	gp_smooth_motion_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_smooth_motion_default};
++
+ } // namespace
+ 
+ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+@@ -11102,6 +11113,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_vanilla_fizzle_fx_cvar);
+ 	cvar_mgr.add(gp_ps_map_in_stats_cvar);
+ 	cvar_mgr.add(gp_show_crosshair_cvar);
++	cvar_mgr.add(gp_smooth_motion_cvar);
+ }
+ 
+ namespace {
+@@ -11273,6 +11285,15 @@ void gp_show_crosshair(bool is_enabled)
+ {
+ 	gp_show_crosshair_cvar.set_bool(is_enabled);
+ }
++bool gp_smooth_motion() noexcept
++{
++	return gp_smooth_motion_cvar.get_bool();
++}
++
++void gp_smooth_motion(bool is_enabled)
++{
++	gp_smooth_motion_cvar.set_bool(is_enabled);
++}
+ 
+ bool am_rotatable() noexcept
+ {
+diff --git a/src/bstone/src/3d_menu.cpp b/src/bstone/src/3d_menu.cpp
+index d18b6213..4a2e1740 100644
+--- a/src/bstone/src/3d_menu.cpp
++++ b/src/bstone/src/3d_menu.cpp
+@@ -120,6 +120,7 @@ enum sw2_labels
+ 	SW2_VANILLA_FIZZLE_FX,
+ 	SW2_PS_MAP_IN_STATS,
+ 	SW2_SHOW_CROSSHAIR,
++	SW2_SMOOTH_MOTION,
+ }; // sw2_labels
+ 
+ enum MenuVideoLables
+@@ -421,7 +422,7 @@ CP_iteminfo SwitchItems = {MENU_X, 0, 0, 0, 0, 9, {87, -1, 132, 7, 1}};
+ CP_iteminfo video_items = {MENU_X, MENU_Y + 30, 5, 0, 0, 9, {77, -1, 154, 7, 1}};
+ CP_iteminfo video_mode_items = {MENU_X - 31, MENU_Y + 10, 8, 0, 0, 9, {67, -1, 184, 7, 1}};
+ CP_iteminfo texturing_items = {MENU_X, MENU_Y + 10, 7, 0, 0, 9, {77, -1, 154, 7, 1}};
+-CP_iteminfo switches2_items = {MENU_X, MENU_Y + 30, 6, 0, 0, 9, {87, -1, 132, 7, 1}};
++CP_iteminfo switches2_items = {MENU_X, MENU_Y + 30, 7, 0, 0, 9, {87, -1, 132, 7, 1}};
+ // BBi
+ 
+ 
+@@ -497,6 +498,7 @@ CP_itemtype switch2_menu[] =
+ 	{AT_ENABLED, "VANILLA FIZZLE FX", 0},
+ 	{AT_ENABLED, "[PS] MAP IN STATS", 0},
+ 	{AT_ENABLED, "SHOW CROSSHAIR", 0},
++	{AT_ENABLED, "SMOOTH MOTION", 0},
+ };
+ 
+ CP_itemtype NewEmenu[] = {
+@@ -6103,6 +6105,7 @@ void draw_switch2_description(
+ 		"TOGGLES VANILLA FIZZLE FX",
+ 		"TOGGLES MAP IN STATS (PLANET STRIKE)",
+ 		"TOGGLES AIMING CROSSHAIR",
++		"TOGGLES DRAWING BETWEEN GAME TICS",
+ 	};
+ 
+ 	const auto& assets_info = get_assets_info();
+@@ -6193,6 +6196,13 @@ void draw_all_switch2_lights(
+ 					shape += 1;
+ 				}
+ 				break;
++
++			case SW2_SMOOTH_MOTION:
++				if (gp_smooth_motion())
++				{
++					shape += 1;
++				}
++				break;
+ 			}
+ 
+ 			VWB_DrawPic(switches2_items.x - 16, switches2_items.y + (i * switches2_items.y_spacing) - 1, shape);
+@@ -6269,6 +6279,12 @@ void cp_switches2(
+ 			ShootSnd();
+ 			draw_switch2_menu();
+ 			break;
++
++		case SW2_SMOOTH_MOTION:
++			gp_smooth_motion(!gp_smooth_motion());
++			ShootSnd();
++			draw_switch2_menu();
++			break;
+ 		}
+ 	} while (which >= 0);
+ 
+diff --git a/src/bstone/src/3d_play.cpp b/src/bstone/src/3d_play.cpp
+index 9262067f..f642309d 100644
+--- a/src/bstone/src/3d_play.cpp
++++ b/src/bstone/src/3d_play.cpp
+@@ -508,6 +508,36 @@ void PollKeyboardMove()
+ 	}
+ }
+ 
++namespace {
++
++// Fractional mouse turn carried over to the next frame so small movements aren't truncated away.
++double mouse_delta_x_remainder = 0.0;
++
++// Mouse turn in controlx units, including the carried-over fraction.
++double get_mouse_turn(int mousexmove) noexcept
++{
++	const auto move_scale = 1.0 + (in_get_mouse_sensitivity() / 6.0);
++
++	return (mousexmove * move_scale) + mouse_delta_x_remainder;
++}
++
++} // namespace
++
++// Shows the mouse turn accumulated since the last game tic without consuming it.
++void PollMousePreview()
++{
++	if (!in_is_mouse_enabled())
++	{
++		return;
++	}
++
++	int mousexmove;
++	int mouseymove;
++	in_get_mouse_deltas(mousexmove, mouseymove);
++
++	smooth_motion_set_preview_turn(std::trunc(get_mouse_turn(mousexmove)));
++}
++
+ void PollMouseMove()
+ {
+ 	int mousexmove;
+@@ -525,7 +555,7 @@ void PollMouseMove()
+ 
+ 	const auto move_scale = 1.0 + (in_get_mouse_sensitivity() / 6.0);
+ 
+-	auto delta_x = static_cast<double>(mousexmove);
++	auto delta_x = get_mouse_turn(mousexmove);
+ 	auto delta_y = static_cast<double>(mouseymove);
+ 
+ 	if (is_running)
+@@ -539,14 +569,10 @@ void PollMouseMove()
+ 
+ 	delta_y = 0.0;
+ 
+-	delta_x *= move_scale;
+ 	delta_y *= move_scale;
+ 
+-	// Carry the fractional part over to the next frame so small mouse movements aren't truncated away.
+-	static auto delta_x_remainder = 0.0;
+-	delta_x += delta_x_remainder;
+ 	const auto whole_delta_x = std::trunc(delta_x);
+-	delta_x_remainder = delta_x - whole_delta_x;
++	mouse_delta_x_remainder = delta_x - whole_delta_x;
+ 	delta_x = whole_delta_x;
+ 
+ 	controlx += static_cast<int>(delta_x);
+@@ -612,7 +638,15 @@ void PollControls()
+ 	//
+ 	// get timing info for last frame
+ 	//
+-	CalcTics();
++	if (smooth_motion_is_active())
++	{
++		// PlayLoop already waited for a whole tic while drawing in-between frames.
++		CalcTicsNoSleep();
++	}
++	else
++	{
++		CalcTics();
++	}
+ 
+ 	// BBi
+ 	in_handle_events();
+@@ -2033,8 +2067,38 @@ void PlayLoop()
+ 		IN_StartAck();
+ 	}
+ 
++	smooth_motion_reset(gp_smooth_motion() && !demoplayback);
++
+ 	do
+ 	{
++		// Pick up the menu switch without restarting the level.
++		const auto is_smooth_motion = gp_smooth_motion() && !demoplayback;
++
++		if (is_smooth_motion != smooth_motion_is_active())
++		{
++			smooth_motion_reset(is_smooth_motion);
++		}
++
++		if (smooth_motion_is_active())
++		{
++			// Draw frames at the display rate until the next game tic is due.
++			// Game logic doesn't run here, so nothing should count down.
++			const auto saved_tics = tics;
++			tics = 0;
++
++			while (!smooth_motion_is_tic_pending() && !playstate && !startgame)
++			{
++				in_handle_events();
++				PollMousePreview();
++
++				vid_is_hud = true;
++				ThreeDRefresh();
++				vid_is_hud = false;
++			}
++
++			tics = saved_tics;
++		}
++
+ 		PollControls();
+ 
+ 		//
+@@ -2084,6 +2148,8 @@ void PlayLoop()
+ 			CheckSpawnGoldstern();
+ 		}
+ 
++		smooth_motion_end_logic_frame();
++
+ 		vid_is_hud = true;
+ 		UpdatePaletteShifts();
+ 
+@@ -2137,6 +2203,8 @@ void PlayLoop()
+ 
+ 	} while (!playstate && !startgame);
+ 
++	smooth_motion_reset(false);
++
+ 	if (playstate != ex_died)
+ 	{
+ 		FinishPaletteShifts();
+diff --git a/src/bstone/src/bstone_hw_video.cpp b/src/bstone/src/bstone_hw_video.cpp
+index c530c4dc..105b0148 100644
+--- a/src/bstone/src/bstone_hw_video.cpp
++++ b/src/bstone/src/bstone_hw_video.cpp
+@@ -2630,8 +2630,8 @@ void HwVideo::update_player_direction() noexcept
+ 
+ void HwVideo::update_player_position() noexcept
+ {
+-	player_position_[0] = player->x;
+-	player_position_[1] = player->y;
++	player_position_[0] = player_get_view_x();
++	player_position_[1] = player_get_view_y();
+ }
+ 
+ void HwVideo::update_player_view_position() noexcept

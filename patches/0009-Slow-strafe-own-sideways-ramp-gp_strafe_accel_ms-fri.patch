@@ -1,0 +1,168 @@
+From 4ad523d429b24dab724189d7d7cc2515aa06bf3f Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 01:28:46 +1100
+Subject: [PATCH 09/16] Slow strafe: own sideways ramp
+ (gp_strafe_accel_ms/friction_ms 200), default 40%
+
+With slow strafe on, momentum ramps forward/back and sideways separately.
+Sideways uses gp_strafe_accel_ms / gp_strafe_friction_ms (default 200 ms)
+measured against the strafe speed, so a slower strafe no longer shortens
+its start/stop ramp. Default gp_strafe_speed_pct is now 40.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/bstone/src/3d_agent.cpp | 49 +++++++++++++++++++++++++++++++++++++
+ src/bstone/src/3d_def.h     |  2 ++
+ src/bstone/src/3d_main.cpp  | 40 +++++++++++++++++++++++++++++-
+ 3 files changed, 90 insertions(+), 1 deletion(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 3fa40712..69340668 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -592,11 +592,60 @@ void momentum_end()
+ 	const auto ramp_ms = has_wish ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
+ 	const auto max_step = (ramp_ms > 0) ? run_speed / (ramp_ms * TickBase / 1000.0) : 1.0e9;
+ 
++	// Slow strafe: forward/back and sideways ramp separately, sideways with its own times
++	// measured against the (slower) strafe speed.
++	const auto is_split_ramp = gp_slow_strafe() && !demorecord && !demoplayback;
++
++	const auto ramp_step = [](double speed, int ms)
++	{
++		return (ms > 0) ? speed / (ms * TickBase / 1000.0) : 1.0e9;
++	};
++
++	const auto approach = [](double value, double target, double step)
++	{
++		const auto delta = target - value;
++
++		if (std::abs(delta) <= step)
++		{
++			return target;
++		}
++
++		return value + (delta > 0.0 ? step : -step);
++	};
++
++	const auto theta = bstone::math::deg_to_rad(player->angle);
++	const auto forward_x = std::cos(theta);
++	const auto forward_y = -std::sin(theta);
++	const auto side_x = -forward_y;
++	const auto side_y = forward_x;
++
+ 	auto move_x = 0.0;
+ 	auto move_y = 0.0;
+ 
+ 	for (auto i = 0; i < tic_count; ++i)
+ 	{
++		if (is_split_ramp)
++		{
++			const auto wish_f = (wish_x * forward_x) + (wish_y * forward_y);
++			const auto wish_s = (wish_x * side_x) + (wish_y * side_y);
++			auto vel_f = (momentum_velocity_x_ * forward_x) + (momentum_velocity_y_ * forward_y);
++			auto vel_s = (momentum_velocity_x_ * side_x) + (momentum_velocity_y_ * side_y);
++
++			const auto f_ms = (wish_f != 0.0) ? gp_momentum_accel_ms() : gp_momentum_friction_ms();
++			const auto s_ms = (wish_s != 0.0) ? gp_strafe_accel_ms() : gp_strafe_friction_ms();
++			const auto strafe_speed = run_speed * strafe_speed_scale();
++
++			vel_f = approach(vel_f, wish_f, ramp_step(run_speed, f_ms));
++			vel_s = approach(vel_s, wish_s, ramp_step(strafe_speed, s_ms));
++
++			momentum_velocity_x_ = (vel_f * forward_x) + (vel_s * side_x);
++			momentum_velocity_y_ = (vel_f * forward_y) + (vel_s * side_y);
++
++			move_x += momentum_velocity_x_;
++			move_y += momentum_velocity_y_;
++			continue;
++		}
++
+ 		const auto delta_x = wish_x - momentum_velocity_x_;
+ 		const auto delta_y = wish_y - momentum_velocity_y_;
+ 		const auto delta = std::sqrt((delta_x * delta_x) + (delta_y * delta_y));
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index 6d951363..8d476df4 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -4009,6 +4009,8 @@ int gp_momentum_friction_ms() noexcept;
+ bool gp_slow_strafe() noexcept;
+ void gp_slow_strafe(bool is_enabled);
+ int gp_strafe_speed_pct() noexcept;
++int gp_strafe_accel_ms() noexcept;
++int gp_strafe_friction_ms() noexcept;
+ 
+ // Clears the player's momentum (level start).
+ void momentum_reset() noexcept;
+diff --git a/src/bstone/src/3d_main.cpp b/src/bstone/src/3d_main.cpp
+index 8d86c51f..014593b1 100644
+--- a/src/bstone/src/3d_main.cpp
++++ b/src/bstone/src/3d_main.cpp
+@@ -11156,7 +11156,7 @@ auto gp_slow_strafe_cvar = bstone::CVar{
+ // gp_strafe_speed_pct (sideways speed in percent of normal speed)
+ 
+ constexpr auto gp_strafe_speed_pct_cvar_name = bstone::StringView{"gp_strafe_speed_pct"};
+-constexpr auto gp_strafe_speed_pct_default = 50;
++constexpr auto gp_strafe_speed_pct_default = 40;
+ 
+ auto gp_strafe_speed_pct_cvar = bstone::CVar{
+ 	bstone::CVarInt32Tag{},
+@@ -11166,6 +11166,32 @@ auto gp_strafe_speed_pct_cvar = bstone::CVar{
+ 	10,
+ 	100};
+ 
++// gp_strafe_accel_ms (slow strafe: time from standing to full strafe speed)
++
++constexpr auto gp_strafe_accel_ms_cvar_name = bstone::StringView{"gp_strafe_accel_ms"};
++constexpr auto gp_strafe_accel_ms_default = 200;
++
++auto gp_strafe_accel_ms_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_strafe_accel_ms_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_strafe_accel_ms_default,
++	0,
++	2000};
++
++// gp_strafe_friction_ms (slow strafe: time from full strafe speed to standing)
++
++constexpr auto gp_strafe_friction_ms_cvar_name = bstone::StringView{"gp_strafe_friction_ms"};
++constexpr auto gp_strafe_friction_ms_default = 200;
++
++auto gp_strafe_friction_ms_cvar = bstone::CVar{
++	bstone::CVarInt32Tag{},
++	gp_strafe_friction_ms_cvar_name,
++	bstone::CVarFlags::archive,
++	gp_strafe_friction_ms_default,
++	0,
++	2000};
++
+ } // namespace
+ 
+ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+@@ -11192,6 +11218,8 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
+ 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
+ 	cvar_mgr.add(gp_slow_strafe_cvar);
+ 	cvar_mgr.add(gp_strafe_speed_pct_cvar);
++	cvar_mgr.add(gp_strafe_accel_ms_cvar);
++	cvar_mgr.add(gp_strafe_friction_ms_cvar);
+ }
+ 
+ namespace {
+@@ -11413,6 +11441,16 @@ int gp_strafe_speed_pct() noexcept
+ 	return gp_strafe_speed_pct_cvar.get_int32();
+ }
+ 
++int gp_strafe_accel_ms() noexcept
++{
++	return gp_strafe_accel_ms_cvar.get_int32();
++}
++
++int gp_strafe_friction_ms() noexcept
++{
++	return gp_strafe_friction_ms_cvar.get_int32();
++}
++
+ bool am_rotatable() noexcept
+ {
+ 	return am_rotatable_cvar.get_bool();

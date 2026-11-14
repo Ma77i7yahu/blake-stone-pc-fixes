@@ -1,0 +1,124 @@
+From 574dd5c9205db3a510f2db434427b4aaae5dc499 Mon Sep 17 00:00:00 2001
+From: Ma77i7yahu <353917094+Ma77i7yahu@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 23:01:41 +1100
+Subject: [PATCH 02/16] Smooth sub-degree view turning and lossless mouse
+ deltas
+
+---
+ src/bstone/src/3d_agent.cpp        | 18 ++++++++++++++++++
+ src/bstone/src/3d_def.h            |  3 +++
+ src/bstone/src/3d_draw.cpp         | 10 +++++++---
+ src/bstone/src/3d_play.cpp         |  8 ++++++++
+ src/bstone/src/bstone_hw_video.cpp |  2 +-
+ 5 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/src/bstone/src/3d_agent.cpp b/src/bstone/src/3d_agent.cpp
+index 6434c2ff..f89043fc 100644
+--- a/src/bstone/src/3d_agent.cpp
++++ b/src/bstone/src/3d_agent.cpp
+@@ -491,6 +491,24 @@ int clamp_angle(
+ 	return angle;
+ }
+ 
++double player_get_view_angle() noexcept
++{
++	// The logical angle is whole degrees; anglefrac holds the pending remainder (in 1/ANGLESCALE degree units).
++	auto angle = player->angle - (static_cast<double>(anglefrac) / ANGLESCALE);
++
++	while (angle >= ANGLES)
++	{
++		angle -= ANGLES;
++	}
++
++	while (angle < 0.0)
++	{
++		angle += ANGLES;
++	}
++
++	return angle;
++}
++
+ /*
+ =======================
+ =
+diff --git a/src/bstone/src/3d_def.h b/src/bstone/src/3d_def.h
+index ab2a8473..b90031d3 100644
+--- a/src/bstone/src/3d_def.h
++++ b/src/bstone/src/3d_def.h
+@@ -3367,6 +3367,9 @@ extern char LocationText[MAX_LOCATION_DESC_LEN];
+ //
+ extern int anglefrac;
+ 
++// Player's view angle in degrees [0, ANGLES) including the sub-degree turn remainder.
++double player_get_view_angle() noexcept;
++
+ extern std::uint16_t LastMsgPri;
+ extern std::int16_t MsgTicsRemain;
+ 
+diff --git a/src/bstone/src/3d_draw.cpp b/src/bstone/src/3d_draw.cpp
+index a842c7a6..f9f4c5e8 100644
+--- a/src/bstone/src/3d_draw.cpp
++++ b/src/bstone/src/3d_draw.cpp
+@@ -7,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ 
+ #include <cassert>
++#include <cmath>
+ #include <cstring>
+ 
+ #include <algorithm>
+@@ -1570,9 +1571,12 @@ void WallRefresh()
+ 	//
+ 
+ 	viewangle = player->angle;
+-	midangle = viewangle * (FINEANGLES / ANGLES);
+-	viewsin = sintable[viewangle];
+-	viewcos = costable[viewangle];
++
++	const auto view_angle = player_get_view_angle();
++	midangle = static_cast<int>(std::lround(view_angle * (FINEANGLES / ANGLES))) % FINEANGLES;
++	const auto view_angle_rad = bstone::math::deg_to_rad(view_angle);
++	viewsin = std::sin(view_angle_rad);
++	viewcos = std::cos(view_angle_rad);
+ 	viewx = player->x - (focallength * viewcos);
+ 	viewy = player->y + (focallength * viewsin);
+ 
+diff --git a/src/bstone/src/3d_play.cpp b/src/bstone/src/3d_play.cpp
+index 8910f0c8..9262067f 100644
+--- a/src/bstone/src/3d_play.cpp
++++ b/src/bstone/src/3d_play.cpp
+@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
+ */
+ 
+ 
++#include <cmath>
+ #include <cstring>
+ 
+ #include "audio.h"
+@@ -541,6 +542,13 @@ void PollMouseMove()
+ 	delta_x *= move_scale;
+ 	delta_y *= move_scale;
+ 
++	// Carry the fractional part over to the next frame so small mouse movements aren't truncated away.
++	static auto delta_x_remainder = 0.0;
++	delta_x += delta_x_remainder;
++	const auto whole_delta_x = std::trunc(delta_x);
++	delta_x_remainder = delta_x - whole_delta_x;
++	delta_x = whole_delta_x;
++
+ 	controlx += static_cast<int>(delta_x);
+ 	controly += static_cast<int>(delta_y);
+ }
+diff --git a/src/bstone/src/bstone_hw_video.cpp b/src/bstone/src/bstone_hw_video.cpp
+index 64072626..c530c4dc 100644
+--- a/src/bstone/src/bstone_hw_video.cpp
++++ b/src/bstone/src/bstone_hw_video.cpp
+@@ -2623,7 +2623,7 @@ try {
+ 
+ void HwVideo::update_player_direction() noexcept
+ {
+-	player_angle_rad_ = math::deg_to_rad(player->angle);
++	player_angle_rad_ = math::deg_to_rad(player_get_view_angle());
+ 	view_direction_ = cgm::Vec2D{std::cos(player_angle_rad_), -std::sin(player_angle_rad_)};
+ 	bs_view_direction_ = view_direction_;
+ }
