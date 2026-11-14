@@ -1544,6 +1544,18 @@ void DamageActor(
 		switch (ob->obclass)
 		{
 		case swatobj:
+			// gp_possum_shootable: a trooper playing possum takes the hit and
+			// stays down (it dies once its hit points run out).
+			//
+			if (gp_possum_shootable() &&
+				(ob->state == &s_swatwounded1 ||
+					ob->state == &s_swatwounded2 ||
+					ob->state == &s_swatwounded3 ||
+					ob->state == &s_swatwounded4))
+			{
+				return;
+			}
+
 			// Don't get wounded if it's an arc!
 			//
 			if ((attacker->obclass == arc_barrierobj) ||
@@ -1570,6 +1582,11 @@ void DamageActor(
 
 				NewState(ob, &s_swatwounded1);
 				ob->flags &= ~(FL_SHOOTABLE | FL_SOLID);
+
+				if (gp_possum_shootable())
+				{
+					ob->flags |= FL_SHOOTABLE;
+				}
 				ob->temp2 = (5 * 60) + ((US_RndT() % 20) * 60);
 				return;
 			}

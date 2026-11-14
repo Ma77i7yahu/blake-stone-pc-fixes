@@ -11153,6 +11153,17 @@ auto gp_automap_secrets_cvar = bstone::CVar{
 	bstone::CVarFlags::archive,
 	gp_automap_secrets_default};
 
+// gp_possum_shootable (Star Troopers playing possum can still be shot)
+
+constexpr auto gp_possum_shootable_cvar_name = bstone::StringView{"gp_possum_shootable"};
+constexpr auto gp_possum_shootable_default = true;
+
+auto gp_possum_shootable_cvar = bstone::CVar{
+	bstone::CVarBoolTag{},
+	gp_possum_shootable_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_possum_shootable_default};
+
 // gp_slow_strafe (sideways movement uses gp_strafe_speed_pct of normal speed)
 
 constexpr auto gp_slow_strafe_cvar_name = bstone::StringView{"gp_slow_strafe"};
@@ -11252,6 +11263,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_momentum_accel_ms_cvar);
 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
 	cvar_mgr.add(gp_automap_secrets_cvar);
+	cvar_mgr.add(gp_possum_shootable_cvar);
 	cvar_mgr.add(gp_slow_strafe_cvar);
 	cvar_mgr.add(gp_strafe_speed_pct_cvar);
 	cvar_mgr.add(gp_momentum_style_cvar);
@@ -11467,6 +11479,11 @@ int gp_momentum_friction_ms() noexcept
 bool gp_automap_secrets() noexcept
 {
 	return gp_automap_secrets_cvar.get_bool();
+}
+
+bool gp_possum_shootable() noexcept
+{
+	return gp_possum_shootable_cvar.get_bool();
 }
 
 bool gp_slow_strafe() noexcept

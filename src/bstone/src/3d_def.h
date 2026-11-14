@@ -3623,6 +3623,9 @@ extern statetype s_hold;
 
 
 extern statetype s_swatwounded1;
+extern statetype s_swatwounded2;
+extern statetype s_swatwounded3;
+extern statetype s_swatwounded4;
 
 extern statetype s_deathcam;
 
@@ -4007,6 +4010,7 @@ void gp_momentum(bool is_enabled);
 int gp_momentum_accel_ms() noexcept;
 int gp_momentum_friction_ms() noexcept;
 bool gp_automap_secrets() noexcept;
+bool gp_possum_shootable() noexcept;
 bool gp_slow_strafe() noexcept;
 void gp_slow_strafe(bool is_enabled);
 int gp_strafe_speed_pct() noexcept;
