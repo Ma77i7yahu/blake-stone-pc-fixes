@@ -2213,6 +2213,8 @@ void ShowOverhead(
 	const auto diameter = static_cast<int>(radius * 2.0);
 
 	const auto is_show_all = ((flags & OV_SHOWALL) != 0);
+	const auto is_show_secrets = gp_automap_secrets();
+	const auto pwall_color = (assets_info.is_aog() ? PWALL_COLOR : std::uint8_t{0x79});
 
 	// Draw rotated radar.
 	//
@@ -2344,7 +2346,8 @@ void ShowOverhead(
 						}
 					}
 
-					if ((ExtraRadarFlags & OV_PUSHWALLS) != 0 ||
+					if (is_show_secrets ||
+						(ExtraRadarFlags & OV_PUSHWALLS) != 0 ||
 						(assets_info.is_ps() && zoom == 4 && (flags & OV_PUSHWALLS) != 0))
 					{
 						auto iconnum = mapsegs[1][farmapylookup[my] + mx];
@@ -2353,9 +2356,9 @@ void ShowOverhead(
 						//
 						if (iconnum == PUSHABLETILE)
 						{
-							if (show_pwalls_on_automap(mx, my, is_show_all))
+							if (show_pwalls_on_automap(mx, my, is_show_all || is_show_secrets))
 							{
-								color = (assets_info.is_aog() ? PWALL_COLOR : 0x79);
+								color = pwall_color;
 							}
 						}
 					}
@@ -2363,6 +2366,29 @@ void ShowOverhead(
 				else
 				{
 					color = UNMAPPED_COLOR;
+
+					// SHOW SECRETS (gp_automap_secrets): pushwalls and hidden-area
+					// floors are revealed even before they have been visited.
+					//
+					if (is_show_secrets)
+					{
+						const auto tile = tilemap[mx][my];
+
+						if (tile != 0 &&
+							mapsegs[1][farmapylookup[my] + mx] == PUSHABLETILE)
+						{
+							color = pwall_color;
+						}
+						else if (tile == 0 || (tile & 0xC0) != 0)
+						{
+							static_cast<void>(GetAreaNumber(mx, my));
+
+							if (GAN_HiddenArea)
+							{
+								color = HIDDEN_COLOR;
+							}
+						}
+					}
 				}
 			}
 

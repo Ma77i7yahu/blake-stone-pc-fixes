@@ -11142,6 +11142,17 @@ auto gp_momentum_friction_ms_cvar = bstone::CVar{
 	0,
 	2000};
 
+// gp_automap_secrets (automap always shows pushwalls and hidden areas)
+
+constexpr auto gp_automap_secrets_cvar_name = bstone::StringView{"gp_automap_secrets"};
+constexpr auto gp_automap_secrets_default = true;
+
+auto gp_automap_secrets_cvar = bstone::CVar{
+	bstone::CVarBoolTag{},
+	gp_automap_secrets_cvar_name,
+	bstone::CVarFlags::archive,
+	gp_automap_secrets_default};
+
 // gp_slow_strafe (sideways movement uses gp_strafe_speed_pct of normal speed)
 
 constexpr auto gp_slow_strafe_cvar_name = bstone::StringView{"gp_slow_strafe"};
@@ -11240,6 +11251,7 @@ void gp_initialize_cvars(bstone::CVarMgr& cvar_mgr)
 	cvar_mgr.add(gp_momentum_cvar);
 	cvar_mgr.add(gp_momentum_accel_ms_cvar);
 	cvar_mgr.add(gp_momentum_friction_ms_cvar);
+	cvar_mgr.add(gp_automap_secrets_cvar);
 	cvar_mgr.add(gp_slow_strafe_cvar);
 	cvar_mgr.add(gp_strafe_speed_pct_cvar);
 	cvar_mgr.add(gp_momentum_style_cvar);
@@ -11450,6 +11462,11 @@ int gp_momentum_accel_ms() noexcept
 int gp_momentum_friction_ms() noexcept
 {
 	return gp_momentum_friction_ms_cvar.get_int32();
+}
+
+bool gp_automap_secrets() noexcept
+{
+	return gp_automap_secrets_cvar.get_bool();
 }
 
 bool gp_slow_strafe() noexcept
